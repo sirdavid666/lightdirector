@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "LightDirector",
+    "slug": "lightdirector",
+    "version": "1.0.0",
+    "orientation": "landscape",
+    "scheme": "lightdirector",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0d1117"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "LightDirector needs camera access to stream your service.",
+        "NSMicrophoneUsageDescription": "LightDirector needs microphone access to capture audio for your stream."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0d1117"
+      },
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE"
+      ],
+      "package": "com.lightdirector.app"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow LightDirector to access your camera for live streaming."
+        }
+      ]
+    ]
+  }
+}
