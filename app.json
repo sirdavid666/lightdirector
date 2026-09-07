@@ -41,6 +41,11 @@
           "cameraPermission": "Allow LightDirector to access your camera for live streaming."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "5ba7378a-39fa-4910-96d4-c3789732050d"
+      }
+    }
   }
 }
