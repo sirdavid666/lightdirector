@@ -1,4 +1,4 @@
-import * as mqtt from 'mqtt/dist/mqtt';
+import mqtt from 'mqtt';
 import type { MqttClient } from 'mqtt';
 import type { RoomCommand } from '@/lib/lightcast';
 
