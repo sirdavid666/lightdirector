@@ -20,6 +20,13 @@ const SCENES = ['Camera', 'Bible', 'Lyrics', 'Lower Third', 'Ticker', 'Countdown
 const CATEGORIES = ['Praise', 'Worship', 'Scripture', 'Sermon', 'Offering', 'Announce', 'Prayer', 'Special', 'Closing'];
 const GRADE_PRESETS: GradeSettings['preset'][] = ['Natural', 'Warm Church', 'Cool', 'Cinematic', 'Vivid', 'Flat/Log lift'];
 
+// Resolution -> {width,height,videoBitrate}
+const RES_MAP: Record<string, { width: number; height: number; videoBitrate: number }> = {
+  '720p30': { width: 1280, height: 720, videoBitrate: 2500 },
+  '1080p30': { width: 1920, height: 1080, videoBitrate: 4500 },
+  '1080p60': { width: 1920, height: 1080, videoBitrate: 6000 },
+};
+
 type Tab = 'Scenes' | 'Library' | 'Rundown' | 'Settings';
 type RundownItem = { id: string; text: string; category: string };
 
@@ -74,7 +81,7 @@ export default function DirectorConsole() {
 
   const [lowerName, setLowerName] = useState('Pastor David');
   const [lowerRole, setLowerRole] = useState('Senior Pastor');
-  const [tickerText, setTickerText] = useState('Welcome to service — God bless you!');
+  const [tickerText, setTickerText] = useState('Welcome to service — God bless you! GOFF 3.0 is starting soon.');
   const [countMins, setCountMins] = useState('5');
 
   const [rundown, setRundown] = useState<RundownItem[]>([]);
@@ -106,6 +113,7 @@ export default function DirectorConsole() {
       const lr = await AsyncStorage.getItem('lowerRole'); if (lr) setLowerRole(lr);
       const tt = await AsyncStorage.getItem('tickerText'); if (tt) setTickerText(tt);
       const cm = await AsyncStorage.getItem('countMins'); if (cm) setCountMins(cm);
+      const rs = await AsyncStorage.getItem('resolution'); if (rs) setResolution(rs);
     })();
   }, []);
 
@@ -173,11 +181,12 @@ export default function DirectorConsole() {
   }
 
   async function handleGoLive() {
+    const res = RES_MAP[resolution] || RES_MAP['1080p30'];
     if (rtmpUrl.trim()) {
       try {
         const baseUrl = rtmpUrl.trim().replace(/\/$/, '');
         const url = rtmpKey.trim() ? `${baseUrl}/${rtmpKey.trim()}` : baseUrl;
-        await startPublishing({ secureStreamUrl: url, grade });
+        await startPublishing({ secureStreamUrl: url, grade, width: res.width, height: res.height, videoBitrate: res.videoBitrate });
         setIsLive(true);
       } catch (e: any) { Alert.alert('Go Live failed', e.message); }
       return;
@@ -187,7 +196,7 @@ export default function DirectorConsole() {
       const token = (await getFacebookToken())!;
       const video = await createFacebookLiveVideo(selectedDest);
       liveVideoId.current = video.id;
-      await startPublishing({ secureStreamUrl: video.secureStreamUrl, grade });
+      await startPublishing({ secureStreamUrl: video.secureStreamUrl, grade, width: res.width, height: res.height, videoBitrate: res.videoBitrate });
       setIsLive(true);
     } catch (e: any) { Alert.alert('Go Live failed', e.message); }
   }
@@ -222,12 +231,8 @@ export default function DirectorConsole() {
     setFetching(true);
     const result = await fetchBibleVerse(verseRef, verseVersion);
     setFetching(false);
-    if (result.found) {
-      setVerseText(result.text);
-      setVerseRef(result.reference);
-    } else {
-      Alert.alert('Not found', result.text);
-    }
+    if (result.found) { setVerseText(result.text); setVerseRef(result.reference); }
+    else Alert.alert('Not found', result.text);
   }
 
   async function saveSong() {
@@ -322,7 +327,7 @@ export default function DirectorConsole() {
 
       <View style={s.statusRow}>
         <View style={s.liveChip}>
-          <Text style={s.liveChipText}>{liveItem ? `LIVE: ${liveItem.type === 'scripture' ? liveItem.reference : liveItem.type === 'lower' ? liveItem.name : liveItem.type === 'countdown' ? 'Countdown' : liveItem.title}` : 'No live item'}</Text>
+          <Text style={s.liveChipText}>{liveItem ? `LIVE: ${liveItem.type === 'scripture' ? liveItem.reference : liveItem.type === 'lower' ? liveItem.name : liveItem.type === 'countdown' ? 'Countdown' : liveItem.title ?? liveItem.type}` : 'No live item'}</Text>
           {liveItem ? <TouchableOpacity onPress={clearItem}><Text style={s.clearText}> ✕ Clear</Text></TouchableOpacity> : null}
         </View>
         <Text style={s.roomText}>PAIR: {roomCode} · {roomStatus}</Text>
@@ -351,7 +356,7 @@ export default function DirectorConsole() {
             <TouchableOpacity style={s.takeBtn} onPress={takePreview}><Text style={s.takeBtnText}>TAKE →</Text></TouchableOpacity>
             {!isLive ? (
               <TouchableOpacity style={[s.goBtn, !canGoLive && s.disabled]} onPress={handleGoLive} disabled={!canGoLive}>
-                <Text style={s.goBtnText}>Go Live</Text>
+                <Text style={s.goBtnText}>Go Live ({resolution})</Text>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity style={s.stopBtn} onPress={handleStop}><Text style={s.goBtnText}>Stop</Text></TouchableOpacity>
@@ -432,7 +437,7 @@ export default function DirectorConsole() {
 
             <Text style={s.sub}>Songs / Hymns (Teleprompter) {editingSong !== null ? '(editing)' : ''}</Text>
             <TextInput style={s.input} placeholder="Song title" placeholderTextColor="#666" value={songTitle} onChangeText={setSongTitle} />
-            <TextInput style={s.input} placeholder="Lyrics — one line per row (teleprompter advances line by line)" placeholderTextColor="#666" value={songLines} onChangeText={setSongLines} multiline />
+            <TextInput style={s.input} placeholder="Lyrics — one line per row" placeholderTextColor="#666" value={songLines} onChangeText={setSongLines} multiline />
             <TouchableOpacity style={s.saveBtn} onPress={saveSong}><Text style={s.saveBtnText}>{editingSong !== null ? '✔ Update Song' : '+ Save Song'}</Text></TouchableOpacity>
             {songs.map((so, i) => (
               <View key={i} style={s.rowFlex}>
@@ -460,7 +465,7 @@ export default function DirectorConsole() {
             <Text style={s.sub}>Graphics (Lower Third / Ticker / Countdown)</Text>
             <TextInput style={s.input} placeholder="Lower third name" placeholderTextColor="#666" value={lowerName} onChangeText={setLowerName} />
             <TextInput style={s.input} placeholder="Lower third role/title" placeholderTextColor="#666" value={lowerRole} onChangeText={setLowerRole} />
-            <TextInput style={s.input} placeholder="Ticker text (auto-scrolls like WAP TV)" placeholderTextColor="#666" value={tickerText} onChangeText={setTickerText} />
+            <TextInput style={s.input} placeholder="Ticker text (slow single-line scroll)" placeholderTextColor="#666" value={tickerText} onChangeText={setTickerText} />
             <TextInput style={s.input} placeholder="Countdown minutes" placeholderTextColor="#666" value={countMins} onChangeText={setCountMins} keyboardType="number-pad" />
             <TouchableOpacity style={s.saveBtn} onPress={saveGraphics}><Text style={s.saveBtnText}>💾 Save Graphics</Text></TouchableOpacity>
           </View>
@@ -491,19 +496,14 @@ export default function DirectorConsole() {
           <View style={s.panel}>
             <Text style={s.panelTitle}>SETTINGS</Text>
 
-            <Text style={s.sub}>CUSTOM RTMP (Works with ANY platform: Castr, Restream, YouTube, Twitch, Facebook via relay)</Text>
-            <TextInput style={s.input} placeholder="rtmp://ingest.castr.io/live" placeholderTextColor="#666" value={rtmpUrl} onChangeText={(t) => { setRtmpUrl(t); AsyncStorage.setItem('rtmpUrl', t); }} autoCapitalize="none" />
+            <Text style={s.sub}>CUSTOM RTMP (Castr / Restream / YouTube / Twitch / FB Live Producer)</Text>
+            <TextInput style={s.input} placeholder="rtmps://live-api-s.facebook.com:443/rtmp/" placeholderTextColor="#666" value={rtmpUrl} onChangeText={(t) => { setRtmpUrl(t); AsyncStorage.setItem('rtmpUrl', t); }} autoCapitalize="none" />
             <TextInput style={s.input} placeholder="Stream key" placeholderTextColor="#666" value={rtmpKey} onChangeText={(t) => { setRtmpKey(t); AsyncStorage.setItem('rtmpKey', t); }} autoCapitalize="none" />
 
             <View style={s.settingRow}><Text style={s.settingLabel}>Picture-in-Picture</Text><Switch value={pipOn} onValueChange={setPipOn} /></View>
-            <View style={s.settingRow}><Text style={s.settingLabel}>Resolution</Text>
-              {['720p30', '1080p30', '1080p60'].map((r) => (
-                <TouchableOpacity key={r} style={[s.chip, resolution === r && s.chipActive]} onPress={() => setResolution(r)}><Text style={s.chipText}>{r}</Text></TouchableOpacity>
-              ))}
-            </View>
-            <View style={s.settingRow}><Text style={s.settingLabel}>Bitrate (Mbps)</Text>
-              {['2.5', '4.5', '6', '8'].map((b) => (
-                <TouchableOpacity key={b} style={[s.chip, bitrate === b && s.chipActive]} onPress={() => setBitrate(b)}><Text style={s.chipText}>{b}</Text></TouchableOpacity>
+            <View style={s.settingRow}><Text style={s.settingLabel}>Resolution (HD)</Text>
+              {(['720p30', '1080p30', '1080p60'] as const).map((r) => (
+                <TouchableOpacity key={r} style={[s.chip, resolution === r && s.chipActive]} onPress={() => { setResolution(r); AsyncStorage.setItem('resolution', r); if (isLive) Alert.alert('HD change', 'New resolution applies on the next Go Live. Stop and Go Live again to switch.'); }}><Text style={s.chipText}>{r}</Text></TouchableOpacity>
               ))}
             </View>
             <View style={s.settingRow}><Text style={s.settingLabel}>Grade Preset</Text>
@@ -511,6 +511,7 @@ export default function DirectorConsole() {
                 <TouchableOpacity key={g} style={[s.chip, grade.preset === g && s.chipActive]} onPress={() => { const ng = { ...grade, preset: g }; setGrade(ng); room.current?.publish({ type: 'grade', grade: ng }); }}><Text style={s.chipText}>{g}</Text></TouchableOpacity>
               ))}
             </View>
+            <Text style={s.note}>Note: HD resolution is applied to the encoder at Go Live. Full cinematic color-grading of the RTMP output requires a Phase-2 GPU pipeline; presets are stored and synced for that upgrade.</Text>
             <View style={s.settingRow}><Text style={s.settingLabel}>Room Code</Text>
               <TextInput style={[s.input, { flex: 1 }]} value={roomCode} onChangeText={setRoomCode} autoCapitalize="characters" />
             </View>
@@ -569,29 +570,31 @@ function ClockBox() {
   );
 }
 
+// Single-line, slow, continuous marquee
 function ScrollingTicker({ text }: { text: string }) {
   const scrollAnim = useRef(new Animated.Value(0)).current;
-  const textWidth = text.length * 8; // rough estimate
+  const charWidth = 7;
+  const totalWidth = text.length * charWidth;
 
   useEffect(() => {
-    scrollAnim.setValue(0);
+    scrollAnim.setValue(200); // start off-screen right
     const animation = Animated.loop(
       Animated.timing(scrollAnim, {
-        toValue: -textWidth - 200,
-        duration: text.length * 150,
+        toValue: -totalWidth,
+        duration: Math.max(8000, text.length * 220), // slow: ~220ms per char
         useNativeDriver: true,
       })
     );
     animation.start();
     return () => animation.stop();
-  }, [text, textWidth, scrollAnim]);
+  }, [text, totalWidth, scrollAnim]);
 
   return (
     <View style={s.ticker}>
       <View style={s.newsBlock}><Text style={s.newsText}>NEWS</Text></View>
       <View style={s.tickerScrollArea}>
-        <Animated.Text style={[s.tickerText, { transform: [{ translateX: scrollAnim }] }]}>
-          {text}     •     {text}     •     {text}
+        <Animated.Text style={[s.tickerText, { transform: [{ translateX: scrollAnim }] }]} numberOfLines={1}>
+          {text}
         </Animated.Text>
       </View>
       <ClockBox />
@@ -608,6 +611,7 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
         {live ? <Text style={s.liveTag}>● LIVE</Text> : null}
       </View>
       <View style={s.monitorBody}>
+        {/* Camera ALWAYS renders underneath (except Blank) so overlays sit on top of live video */}
         {showCam ? <CameraView style={StyleSheet.absoluteFill} facing="back" /> : <View style={s.blankBg} />}
         {layout === 'Blank' ? <View style={s.blankBg} /> : null}
 
@@ -618,13 +622,12 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
           </View>
         )}
 
+        {/* LYRICS = bottom bar OVER the camera (pastor sees himself + the line) */}
         {(layout === 'Worship' || layout === 'Lyrics Full') && liveItem?.type === 'hymn' && (
-          <View style={[s.teleprompter, { backgroundColor: lyricsColor }]}>
-            <Text style={s.teleprompterTitle}>{liveItem.title}</Text>
-            <Text style={s.teleprompterLine} numberOfLines={2}>
-              {liveItem.lines[liveItem.lineIndex || 0]}
-            </Text>
-            <Text style={s.teleprompterCount}>{(liveItem.lineIndex || 0) + 1}/{liveItem.lines.length}</Text>
+          <View style={[s.lyricsBar, { backgroundColor: lyricsColor }]}>
+            <Text style={s.lyricsTitle}>{liveItem.title}</Text>
+            <Text style={s.lyricsLine} numberOfLines={2}>{liveItem.lines[liveItem.lineIndex || 0]}</Text>
+            <Text style={s.lyricsCount}>{(liveItem.lineIndex || 0) + 1}/{liveItem.lines.length}</Text>
           </View>
         )}
 
@@ -646,7 +649,6 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
 
         {liveItem?.type === 'countdown' && <CountdownBox minutes={liveItem.minutes} />}
 
-        {/* Always show clock when live */}
         {live && <ClockBox />}
 
         {pipOn && layout === 'Worship' && <View style={s.pip}><Text style={s.pipLabel}>PASTOR</Text></View>}
@@ -687,10 +689,10 @@ const s = StyleSheet.create({
   scriptureFull: { left: 6, width: undefined, right: 6 },
   scriptureRef: { color: '#facc15', fontWeight: '800', fontSize: 13, marginBottom: 6 },
   scriptureText: { color: '#fff', fontWeight: '700', fontSize: 14, textAlign: 'center' },
-  teleprompter: { position: 'absolute', left: 0, right: 0, bottom: 0, top: 0, justifyContent: 'center', alignItems: 'center', padding: 12 },
-  teleprompterTitle: { color: '#0d1117', fontSize: 10, fontWeight: '700', opacity: 0.7, marginBottom: 4 },
-  teleprompterLine: { color: '#0d1117', fontWeight: '800', fontSize: 22, textAlign: 'center', lineHeight: 28 },
-  teleprompterCount: { position: 'absolute', bottom: 4, right: 8, color: '#0d1117', fontSize: 9, fontWeight: '700', opacity: 0.6 },
+  lyricsBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingVertical: 8, paddingHorizontal: 10 },
+  lyricsTitle: { color: '#0d1117', fontSize: 9, fontWeight: '700', opacity: 0.7 },
+  lyricsLine: { color: '#0d1117', fontWeight: '800', fontSize: 16, textAlign: 'center', lineHeight: 20 },
+  lyricsCount: { position: 'absolute', top: 6, right: 8, color: '#0d1117', fontSize: 9, fontWeight: '700', opacity: 0.6 },
   prompterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, backgroundColor: '#161b22', padding: 8, borderRadius: 8 },
   prompterBtn: { backgroundColor: '#ff6a00', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
   prompterBtnText: { color: '#0d1117', fontWeight: '800', fontSize: 12 },
@@ -702,7 +704,7 @@ const s = StyleSheet.create({
   newsBlock: { backgroundColor: '#facc15', paddingHorizontal: 8, height: '100%', justifyContent: 'center' },
   newsText: { color: '#000', fontWeight: '800', fontSize: 10 },
   tickerScrollArea: { flex: 1, overflow: 'hidden', height: '100%', justifyContent: 'center' },
-  tickerText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  tickerText: { color: '#fff', fontSize: 12, fontWeight: '600' },
   clockBox: { backgroundColor: '#ef4444', paddingHorizontal: 6, height: '100%', justifyContent: 'center' },
   clockText: { color: '#fff', fontSize: 10, fontWeight: '800' },
   lowerCard: { position: 'absolute', left: 8, bottom: 28, backgroundColor: 'rgba(13,17,23,0.85)', borderLeftWidth: 3, borderLeftColor: '#ff6a00', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4 },
@@ -731,6 +733,7 @@ const s = StyleSheet.create({
   panel: { backgroundColor: '#161b22', borderRadius: 10, padding: 12, marginTop: 12 },
   panelTitle: { color: '#fff', fontSize: 14, fontWeight: '800', marginBottom: 10 },
   sub: { color: '#8b949e', fontSize: 11, fontWeight: '700', marginTop: 10, marginBottom: 6 },
+  note: { color: '#8b949e', fontSize: 10, fontStyle: 'italic', marginTop: 4, marginBottom: 8 },
   row: { backgroundColor: '#21262d', padding: 10, borderRadius: 8, marginBottom: 6 },
   rowActive: { backgroundColor: '#ff6a00' },
   rowText: { color: '#c9d1d9', fontSize: 13 },
