@@ -27,27 +27,22 @@ export default function DirectorConsole() {
   const [permission, requestPermission] = useCameraPermissions();
   const [tab, setTab] = useState<Tab>('Scenes');
 
-  // Program / preview state
   const [programLayout, setProgramLayout] = useState<Layout>('Camera Only');
   const [previewLayout, setPreviewLayout] = useState<Layout>('Worship');
   const [liveItem, setLiveItem] = useState<LiveItem>(null);
   const previousLayout = useRef<Layout>('Camera Only');
 
-  // Streaming state
   const [isLive, setIsLive] = useState(false);
   const [fbDestinations, setFbDestinations] = useState<FacebookDestination[]>([]);
   const [selectedDest, setSelectedDest] = useState<FacebookDestination | null>(null);
   const liveVideoId = useRef<string | null>(null);
 
-  // Room sync
   const [roomCode, setRoomCode] = useState('LIGHT-247');
   const [roomStatus, setRoomStatus] = useState('Not connected');
   const room = useRef<RoomConnection | null>(null);
 
-  // Grade
   const [grade, setGrade] = useState<GradeSettings>(defaultGrade);
 
-  // Library
   const [savedVerses, setSavedVerses] = useState<any[]>([]);
   const [songs, setSongs] = useState<{ title: string; lines: string[] }[]>([]);
   const [announcements, setAnnouncements] = useState<string[]>([]);
@@ -55,19 +50,20 @@ export default function DirectorConsole() {
   const [verseText, setVerseText] = useState('');
   const [verseVersion, setVerseVersion] = useState<'KJV' | 'YOR'>('KJV');
 
-  // Rundown
   const [rundown, setRundown] = useState<RundownItem[]>([]);
   const [activeRundown, setActiveRundown] = useState<string | null>(null);
   const [rdText, setRdText] = useState('');
   const [rdCat, setRdCat] = useState(CATEGORIES[0]);
 
-  // Settings
   const [pipOn, setPipOn] = useState(true);
   const [resolution, setResolution] = useState('1080p30');
   const [bitrate, setBitrate] = useState('4.5');
   const [lyricsColor, setLyricsColor] = useState('#22c55e');
+  
+  // NEW: Custom RTMP State
+  const [rtmpUrl, setRtmpUrl] = useState('');
+  const [rtmpKey, setRtmpKey] = useState('');
 
-  // Load persisted data
   useEffect(() => {
     (async () => {
       const token = await getFacebookToken();
@@ -79,10 +75,13 @@ export default function DirectorConsole() {
       const an = await AsyncStorage.getItem('announcements'); if (an) setAnnouncements(JSON.parse(an));
       const rd = await AsyncStorage.getItem('rundown'); if (rd) setRundown(JSON.parse(rd));
       const rc = await AsyncStorage.getItem('roomCode'); if (rc) setRoomCode(rc);
+      
+      // NEW: Load RTMP settings
+      const ru = await AsyncStorage.getItem('rtmpUrl'); if (ru) setRtmpUrl(ru);
+      const rk = await AsyncStorage.getItem('rtmpKey'); if (rk) setRtmpKey(rk);
     })();
   }, []);
 
-  // Room connection
   useEffect(() => {
     room.current?.disconnect();
     const conn = connectRoom(roomCode, handleRoomCommand, setRoomStatus);
@@ -99,7 +98,6 @@ export default function DirectorConsole() {
     else if (cmd.type === 'grade') { setGrade(cmd.grade); }
   }
 
-  // Push / clear with auto-switch + auto-return
   function pushItem(item: Exclude<LiveItem, null>) {
     const target = layoutForItem(item, programLayout);
     previousLayout.current = programLayout;
@@ -123,7 +121,6 @@ export default function DirectorConsole() {
     room.current?.publish({ type: 'layout', layout: l });
   }
 
-  // Facebook
   async function handleConnectFacebook() {
     try {
       const redirect = Linking.createURL('facebook-auth');
@@ -131,8 +128,20 @@ export default function DirectorConsole() {
       setFbDestinations(await listFacebookDestinations(token));
     } catch (e: any) { Alert.alert('Facebook', e.message); }
   }
+  
   async function handleGoLive() {
-    if (!selectedDest) { Alert.alert('Pick a destination', 'Connect Facebook and choose a Page or Group first.'); return; }
+    // NEW: Check for Custom RTMP first
+    if (rtmpUrl.trim()) {
+      try {
+        const baseUrl = rtmpUrl.trim().replace(/\/$/, '');
+        const url = rtmpKey.trim() ? `${baseUrl}/${rtmpKey.trim()}` : baseUrl;
+        await startPublishing({ secureStreamUrl: url, grade });
+        setIsLive(true);
+      } catch (e: any) { Alert.alert('Go Live failed', e.message); }
+      return;
+    }
+    
+    if (!selectedDest) { Alert.alert('Pick a destination', 'Connect Facebook and choose a Page, or enter a Custom RTMP URL in Settings.'); return; }
     try {
       const token = (await getFacebookToken())!;
       const video = await createFacebookLiveVideo(selectedDest);
@@ -141,6 +150,7 @@ export default function DirectorConsole() {
       setIsLive(true);
     } catch (e: any) { Alert.alert('Go Live failed', e.message); }
   }
+  
   async function handleStop() {
     try {
       await stopPublishing();
@@ -153,7 +163,6 @@ export default function DirectorConsole() {
     setIsLive(false);
   }
 
-  // Library actions
   async function saveVerse() {
     if (!verseRef.trim() || !verseText.trim()) return;
     const v = { reference: verseRef.trim(), version: verseVersion, text: verseText.trim() };
@@ -173,7 +182,6 @@ export default function DirectorConsole() {
     await AsyncStorage.setItem('announcements', JSON.stringify(next));
   }
 
-  // Rundown
   async function addRundown() {
     if (!rdText.trim()) return;
     const item = { id: Math.random().toString(36).slice(2), text: rdText.trim(), category: rdCat };
@@ -201,11 +209,10 @@ export default function DirectorConsole() {
     else clearItem();
   }
 
-  const canGoLive = !!selectedDest;
+  const canGoLive = !!selectedDest || rtmpUrl.trim().length > 0;
 
   return (
     <View style={s.root}>
-      {/* HEADER */}
       <View style={s.header}>
         <View>
           <Text style={s.title}>Light<Text style={s.accent}>Cast</Text></Text>
@@ -223,7 +230,6 @@ export default function DirectorConsole() {
         </View>
       </View>
 
-      {/* STATUS ROW */}
       <View style={s.statusRow}>
         <View style={s.liveChip}>
           <Text style={s.liveChipText}>{liveItem ? `LIVE: ${liveItem.type === 'scripture' ? liveItem.reference : liveItem.title}` : 'No live item'}</Text>
@@ -233,13 +239,11 @@ export default function DirectorConsole() {
       </View>
 
       <ScrollView contentContainerStyle={s.scroll}>
-        {/* MONITORS */}
         <View style={s.monitors}>
           <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} />
           <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} />
         </View>
 
-        {/* TAKE + GO LIVE */}
         <View style={s.takeRow}>
           <View>
             <Text style={s.takeLabel}>READY TO TAKE</Text>
@@ -257,7 +261,6 @@ export default function DirectorConsole() {
           </View>
         </View>
 
-        {/* LAYOUT CHIPS */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.chips}>
           {LAYOUTS.map((l) => (
             <TouchableOpacity key={l} style={[s.chip, previewLayout === l && s.chipActive]} onPress={() => setLayout(l)}>
@@ -266,7 +269,6 @@ export default function DirectorConsole() {
           ))}
         </ScrollView>
 
-        {/* DESTINATION PICKER */}
         {fbDestinations.length > 0 && (
           <View style={s.panel}>
             <Text style={s.panelTitle}>STREAM DESTINATION</Text>
@@ -278,7 +280,6 @@ export default function DirectorConsole() {
           </View>
         )}
 
-        {/* TAB PANELS */}
         {tab === 'Scenes' && (
           <View style={s.panel}>
             <Text style={s.panelTitle}>OUTPUT SCENES — Choose the next visual</Text>
@@ -329,7 +330,7 @@ export default function DirectorConsole() {
                 <Text style={s.rowText}>{a}</Text>
               </TouchableOpacity>
             ))}
-            <TouchableOpacity style={s.saveBtn} onPress={() => { Alert.prompt ? Alert.prompt('Announcement', '', (t) => t && saveAnnouncement(t)) : saveAnnouncement('Welcome to service'); }}><Text style={s.saveBtnText}>+ Add Announcement</Text></TouchableOpacity>
+            <TouchableOpacity style={s.saveBtn} onPress={() => { saveAnnouncement('Welcome to service'); }}><Text style={s.saveBtnText}>+ Add Announcement</Text></TouchableOpacity>
           </View>
         )}
 
@@ -357,6 +358,11 @@ export default function DirectorConsole() {
         {tab === 'Settings' && (
           <View style={s.panel}>
             <Text style={s.panelTitle}>SETTINGS</Text>
+            
+            <Text style={s.sub}>CUSTOM RTMP RELAY (Castr / Restream)</Text>
+            <TextInput style={s.input} placeholder="rtmp://ingest.castr.io/live" placeholderTextColor="#666" value={rtmpUrl} onChangeText={(t) => { setRtmpUrl(t); AsyncStorage.setItem('rtmpUrl', t); }} autoCapitalize="none" />
+            <TextInput style={s.input} placeholder="Stream key" placeholderTextColor="#666" value={rtmpKey} onChangeText={(t) => { setRtmpKey(t); AsyncStorage.setItem('rtmpKey', t); }} autoCapitalize="none" />
+
             <View style={s.settingRow}><Text style={s.settingLabel}>Picture-in-Picture</Text><Switch value={pipOn} onValueChange={setPipOn} /></View>
             <View style={s.settingRow}><Text style={s.settingLabel}>Resolution</Text>
               {['720p30', '1080p30', '1080p60'].map((r) => (
@@ -381,7 +387,6 @@ export default function DirectorConsole() {
         )}
       </ScrollView>
 
-      {/* BOTTOM NAV */}
       <View style={s.nav}>
         {(['Scenes', 'Library', 'Rundown', 'Settings'] as Tab[]).map((t) => (
           <TouchableOpacity key={t} style={s.navItem} onPress={() => setTab(t)}>
@@ -412,7 +417,6 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
         {showCam ? <CameraView style={StyleSheet.absoluteFill} facing="back" /> : <View style={s.blankBg} />}
         {layout === 'Blank' ? <View style={s.blankBg} /> : null}
 
-        {/* Scripture card (Sermon / Scripture Full) */}
         {(layout === 'Sermon' || layout === 'Scripture Full') && liveItem?.type === 'scripture' && (
           <View style={[s.scriptureCard, layout === 'Scripture Full' && s.scriptureFull]}>
             <Text style={s.scriptureRef}>{liveItem.reference} ({liveItem.version})</Text>
@@ -420,14 +424,12 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
           </View>
         )}
 
-        {/* Lyrics bar (Worship / Lyrics Full) */}
         {(layout === 'Worship' || layout === 'Lyrics Full') && liveItem?.type === 'hymn' && (
           <View style={[s.lyricsBar, { backgroundColor: lyricsColor }]}>
             <Text style={s.lyricsText} numberOfLines={2}>{liveItem.lines.join('  •  ')}</Text>
           </View>
         )}
 
-        {/* Announce ticker */}
         {liveItem?.type === 'announce' && (
           <View style={s.ticker}>
             <View style={s.newsBlock}><Text style={s.newsText}>NEWS</Text></View>
@@ -435,7 +437,6 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
           </View>
         )}
 
-        {/* PIP placeholder */}
         {pipOn && layout === 'Worship' && <View style={s.pip}><Text style={s.pipLabel}>PASTOR</Text></View>}
       </View>
       <Text style={s.layoutTag}>{layout.toUpperCase()}</Text>
