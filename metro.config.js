@@ -1,13 +1,27 @@
 const { getDefaultConfig } = require('expo/metro-config');
 
+/** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);
 
-// Force Metro to use mqtt's pre-bundled BROWSER build (WebSocket-based,
-// no Node core modules like url/net/tls). The default Node build cannot
-// bundle inside a React Native app.
-config.resolver.alias = {
-  ...(config.resolver.alias || {}),
-  mqtt: 'mqtt/dist/mqtt.js',
+config.cacheStores = ({ FileStore }) => [
+  new FileStore({
+    root: '.metro-cache',
+  }),
+];
+
+config.cacheVersion = '2';
+
+const mqttBrowserBundle = require.resolve('mqtt/dist/mqtt.js');
+
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === 'mqtt') {
+    return {
+      type: 'sourceFile',
+      filePath: mqttBrowserBundle,
+    };
+  }
+
+  return context.resolveRequest(context, moduleName, platform);
 };
 
 module.exports = config;
