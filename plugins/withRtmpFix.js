@@ -12,8 +12,8 @@ const PERMS = [
 ];
 
 module.exports = function withRtmpFix(config) {
-  // Claude's idempotent Gradle override (tagged so it never double-inserts),
-  // applied to ALL modules so we don't depend on guessing the module name.
+  // Force ONLY compileSdk (the original error). Do NOT touch minSdk/targetSdk —
+  // Expo's own modules require minSdk 23+, overriding them breaks Fabric.
   config = withProjectBuildGradle(config, (mod) => {
     if (mod.modResults.language !== 'groovy') return mod;
     const injection = `
@@ -23,10 +23,6 @@ allprojects {
             project.android {
                 compileSdkVersion 34
                 buildToolsVersion "34.0.0"
-                defaultConfig {
-                    minSdkVersion 21
-                    targetSdkVersion 34
-                }
             }
         }
     }
@@ -42,7 +38,6 @@ allprojects {
     return mod;
   });
 
-  // Permissions + namespace/exported (kept from the working prebuild pass)
   config = withDangerousMod(config, [
     'android',
     (mod) => {
