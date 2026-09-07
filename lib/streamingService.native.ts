@@ -1,6 +1,12 @@
 import NodeMediaClient from 'react-native-nodemediaclient';
 
-export type PublishRequest = { secureStreamUrl: string; grade: unknown };
+export type PublishRequest = {
+  secureStreamUrl: string;
+  grade: unknown;
+  width?: number;
+  height?: number;
+  videoBitrate?: number;
+};
 
 let client: any = null;
 
@@ -10,14 +16,18 @@ export async function startPublishing(request: PublishRequest) {
     client = null;
   }
 
-  // Initialize the native RTMP publisher
+  const width = request.width || 1280;
+  const height = request.height || 720;
+  const bitrate = request.videoBitrate || 4500;
+  const fps = height >= 1080 && request.videoBitrate === 6000 ? 60 : 30;
+
   client = new NodeMediaClient({
-    url: request.secureStreamUrl, // Facebook's rtmps:// ingest URL
+    url: request.secureStreamUrl,
     video: {
-      width: 1280,
-      height: 720,
-      fps: 30,
-      bitrate: 4500, // 4.5 Mbps for high quality
+      width,
+      height,
+      fps,
+      bitrate,
       profile: 'high',
     },
     audio: {
@@ -27,7 +37,6 @@ export async function startPublishing(request: PublishRequest) {
     },
   });
 
-  // Start pushing to Facebook!
   client.start();
 }
 
