@@ -1,4 +1,4 @@
-const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+const { withDangerousMod } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
@@ -11,23 +11,22 @@ const PERMS = [
 ];
 
 module.exports = function withRtmpFix(config) {
-  config = withDangerousMod(config, [
+  return withDangerousMod(config, [
     'android',
     (mod) => {
+      const androidRoot = path.join(mod.modRequest.platformProjectRoot);
       const libRoot = path.join(mod.modRequest.projectRoot, 'node_modules', 'react-native-nodemediaclient', 'android');
 
-      // Read library manifest: grab its package name, remove deprecated package attr, add android:exported (API 31+ rule)
+      // 1) Patch library: namespace + android:exported
       let pkg = 'com.nodemediaclient';
-      const manifestPath = path.join(libRoot, 'src', 'main', 'AndroidManifest.xml');
-      if (fs.existsSync(manifestPath)) {
-        let m = fs.readFileSync(manifestPath, 'utf8');
+      const libManifest = path.join(libRoot, 'src', 'main', 'AndroidManifest.xml');
+      if (fs.existsSync(libManifest)) {
+        let m = fs.readFileSync(libManifest, 'utf8');
         const pm = m.match(/package="([^"]+)"/);
         if (pm) { pkg = pm[1]; m = m.replace(/package="[^"]+"\s*/, ''); }
         m = m.replace(/<(activity|service|receiver)(?![^>]*android:exported)/g, '$1 android:exported="true"');
-        fs.writeFileSync(manifestPath, m, 'utf8');
+        fs.writeFileSync(libManifest, m, 'utf8');
       }
-
-      // Inject namespace into library build.gradle (AGP 8 requirement)
       const gradlePath = path.join(libRoot, 'build.gradle');
       if (fs.existsSync(gradlePath)) {
         let g = fs.readFileSync(gradlePath, 'utf8');
@@ -36,17 +35,23 @@ module.exports = function withRtmpFix(config) {
           fs.writeFileSync(gradlePath, g, 'utf8');
         }
       }
+
+      // 2) Add foreground-service permissions to the app manifest (safe string edit)
+      const appManifest = path.join(androidRoot, 'app', 'src', 'main', 'AndroidManifest.xml');
+      if (fs.existsSync(appManifest)) {
+        let am = fs.readFileSync(appManifest, 'utf8');
+        let added = false;
+        PERMS.forEach((p) => {
+          if (!am.includes(p)) {
+            am = am.replace('<manifest', '<manifest\n    xmlns:tools="http://schemas.android.com/tools"');
+            am = am.replace(/<manifest([^>]*)>/, '$&\n    <uses-permission android:name="' + p + '" />');
+            added = true;
+          }
+        });
+        if (added) fs.writeFileSync(appManifest, am, 'utf8');
+      }
+
       return mod;
     },
   ]);
-
-  config = withAndroidManifest(config, (mod) => {
-    const main = mod.results.manifest;
-    if (!main['uses-permission']) main['uses-permission'] = [];
-    const have = main['uses-permission'].map((p) => p.$ && p.$['android:name']);
-    PERMS.forEach((p) => { if (!have.includes(p)) main['uses-permission'].push({ $: { 'android:name': p } }); });
-    return mod;
-  });
-
-  return config;
 };
