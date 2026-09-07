@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Alert, Switch } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Alert, Switch, Animated } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -22,6 +22,21 @@ const GRADE_PRESETS: GradeSettings['preset'][] = ['Natural', 'Warm Church', 'Coo
 
 type Tab = 'Scenes' | 'Library' | 'Rundown' | 'Settings';
 type RundownItem = { id: string; text: string; category: string };
+
+async function fetchBibleVerse(reference: string, version: 'KJV' | 'YOR'): Promise<{ reference: string; text: string; found: boolean }> {
+  const translation = version === 'YOR' ? 'yoruba' : 'kjv';
+  const apiRef = reference.trim().replace(/\s+/g, '+');
+  try {
+    const url = `https://bible-api.com/${encodeURIComponent(apiRef)}?translation=${translation}`;
+    const response = await fetch(url);
+    if (!response.ok) return { reference, text: 'Verse not found. Try "John 3:16"', found: false };
+    const data = await response.json() as { reference: string; text: string; translation_name: string };
+    const cleanText = (data.text || '').replace(/\n+$/g, '').trim();
+    return { reference: data.reference || reference, text: cleanText, found: true };
+  } catch {
+    return { reference, text: 'Could not fetch verse. Check connection.', found: false };
+  }
+}
 
 export default function DirectorConsole() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -49,6 +64,18 @@ export default function DirectorConsole() {
   const [verseRef, setVerseRef] = useState('');
   const [verseText, setVerseText] = useState('');
   const [verseVersion, setVerseVersion] = useState<'KJV' | 'YOR'>('KJV');
+  const [fetching, setFetching] = useState(false);
+
+  const [songTitle, setSongTitle] = useState('');
+  const [songLines, setSongLines] = useState('');
+  const [editingSong, setEditingSong] = useState<number | null>(null);
+  const [annText, setAnnText] = useState('');
+  const [editingAnn, setEditingAnn] = useState<number | null>(null);
+
+  const [lowerName, setLowerName] = useState('Pastor David');
+  const [lowerRole, setLowerRole] = useState('Senior Pastor');
+  const [tickerText, setTickerText] = useState('Welcome to service — God bless you!');
+  const [countMins, setCountMins] = useState('5');
 
   const [rundown, setRundown] = useState<RundownItem[]>([]);
   const [activeRundown, setActiveRundown] = useState<string | null>(null);
@@ -59,8 +86,6 @@ export default function DirectorConsole() {
   const [resolution, setResolution] = useState('1080p30');
   const [bitrate, setBitrate] = useState('4.5');
   const [lyricsColor, setLyricsColor] = useState('#22c55e');
-  
-  // NEW: Custom RTMP State
   const [rtmpUrl, setRtmpUrl] = useState('');
   const [rtmpKey, setRtmpKey] = useState('');
 
@@ -75,10 +100,12 @@ export default function DirectorConsole() {
       const an = await AsyncStorage.getItem('announcements'); if (an) setAnnouncements(JSON.parse(an));
       const rd = await AsyncStorage.getItem('rundown'); if (rd) setRundown(JSON.parse(rd));
       const rc = await AsyncStorage.getItem('roomCode'); if (rc) setRoomCode(rc);
-      
-      // NEW: Load RTMP settings
       const ru = await AsyncStorage.getItem('rtmpUrl'); if (ru) setRtmpUrl(ru);
       const rk = await AsyncStorage.getItem('rtmpKey'); if (rk) setRtmpKey(rk);
+      const ln = await AsyncStorage.getItem('lowerName'); if (ln) setLowerName(ln);
+      const lr = await AsyncStorage.getItem('lowerRole'); if (lr) setLowerRole(lr);
+      const tt = await AsyncStorage.getItem('tickerText'); if (tt) setTickerText(tt);
+      const cm = await AsyncStorage.getItem('countMins'); if (cm) setCountMins(cm);
     })();
   }, []);
 
@@ -96,12 +123,15 @@ export default function DirectorConsole() {
     else if (cmd.type === 'push') { previousLayout.current = cmd.previousLayout; setLiveItem(cmd.item); setProgramLayout(cmd.layout); }
     else if (cmd.type === 'clear') { setLiveItem(null); setProgramLayout(cmd.layout); }
     else if (cmd.type === 'grade') { setGrade(cmd.grade); }
+    else if (cmd.type === 'prompter' && liveItem?.type === 'hymn') {
+      setLiveItem({ ...liveItem, lineIndex: cmd.lineIndex });
+    }
   }
 
   function pushItem(item: Exclude<LiveItem, null>) {
     const target = layoutForItem(item, programLayout);
     previousLayout.current = programLayout;
-    setLiveItem(item);
+    setLiveItem(item.type === 'hymn' ? { ...item, lineIndex: 0 } : item);
     setProgramLayout(target);
     room.current?.publish({ type: 'push', item, layout: target, previousLayout: programLayout });
   }
@@ -121,6 +151,19 @@ export default function DirectorConsole() {
     room.current?.publish({ type: 'layout', layout: l });
   }
 
+  function prompterNext() {
+    if (liveItem?.type !== 'hymn') return;
+    const nextIdx = Math.min((liveItem.lineIndex || 0) + 1, liveItem.lines.length - 1);
+    setLiveItem({ ...liveItem, lineIndex: nextIdx });
+    room.current?.publish({ type: 'prompter', lineIndex: nextIdx });
+  }
+  function prompterPrev() {
+    if (liveItem?.type !== 'hymn') return;
+    const prevIdx = Math.max((liveItem.lineIndex || 0) - 1, 0);
+    setLiveItem({ ...liveItem, lineIndex: prevIdx });
+    room.current?.publish({ type: 'prompter', lineIndex: prevIdx });
+  }
+
   async function handleConnectFacebook() {
     try {
       const redirect = Linking.createURL('facebook-auth');
@@ -128,9 +171,8 @@ export default function DirectorConsole() {
       setFbDestinations(await listFacebookDestinations(token));
     } catch (e: any) { Alert.alert('Facebook', e.message); }
   }
-  
+
   async function handleGoLive() {
-    // NEW: Check for Custom RTMP first
     if (rtmpUrl.trim()) {
       try {
         const baseUrl = rtmpUrl.trim().replace(/\/$/, '');
@@ -140,7 +182,6 @@ export default function DirectorConsole() {
       } catch (e: any) { Alert.alert('Go Live failed', e.message); }
       return;
     }
-    
     if (!selectedDest) { Alert.alert('Pick a destination', 'Connect Facebook and choose a Page, or enter a Custom RTMP URL in Settings.'); return; }
     try {
       const token = (await getFacebookToken())!;
@@ -150,7 +191,7 @@ export default function DirectorConsole() {
       setIsLive(true);
     } catch (e: any) { Alert.alert('Go Live failed', e.message); }
   }
-  
+
   async function handleStop() {
     try {
       await stopPublishing();
@@ -171,15 +212,65 @@ export default function DirectorConsole() {
     await AsyncStorage.setItem('savedVerses', JSON.stringify(next));
     setVerseRef(''); setVerseText('');
   }
-  async function saveSong(title: string, lines: string[]) {
-    const next = [...songs, { title, lines }];
+  async function deleteVerse(i: number) {
+    const next = savedVerses.filter((_, j) => j !== i);
+    setSavedVerses(next);
+    await AsyncStorage.setItem('savedVerses', JSON.stringify(next));
+  }
+  async function fetchVerse() {
+    if (!verseRef.trim()) return;
+    setFetching(true);
+    const result = await fetchBibleVerse(verseRef, verseVersion);
+    setFetching(false);
+    if (result.found) {
+      setVerseText(result.text);
+      setVerseRef(result.reference);
+    } else {
+      Alert.alert('Not found', result.text);
+    }
+  }
+
+  async function saveSong() {
+    if (!songTitle.trim() || !songLines.trim()) return;
+    const lines = songLines.split('\n').map((l) => l.trim()).filter(Boolean);
+    const next = editingSong !== null
+      ? songs.map((s, i) => (i === editingSong ? { title: songTitle.trim(), lines } : s))
+      : [...songs, { title: songTitle.trim(), lines }];
     setSongs(next);
     await AsyncStorage.setItem('songs', JSON.stringify(next));
+    setSongTitle(''); setSongLines(''); setEditingSong(null);
   }
-  async function saveAnnouncement(text: string) {
-    const next = [...announcements, text];
+  function editSong(i: number) { setEditingSong(i); setSongTitle(songs[i].title); setSongLines(songs[i].lines.join('\n')); }
+  async function deleteSong(i: number) {
+    const next = songs.filter((_, j) => j !== i);
+    setSongs(next);
+    await AsyncStorage.setItem('songs', JSON.stringify(next));
+    if (editingSong === i) setEditingSong(null);
+  }
+
+  async function saveAnn() {
+    if (!annText.trim()) return;
+    const next = editingAnn !== null
+      ? announcements.map((a, i) => (i === editingAnn ? annText.trim() : a))
+      : [...announcements, annText.trim()];
     setAnnouncements(next);
     await AsyncStorage.setItem('announcements', JSON.stringify(next));
+    setAnnText(''); setEditingAnn(null);
+  }
+  function editAnn(i: number) { setEditingAnn(i); setAnnText(announcements[i]); }
+  async function deleteAnn(i: number) {
+    const next = announcements.filter((_, j) => j !== i);
+    setAnnouncements(next);
+    await AsyncStorage.setItem('announcements', JSON.stringify(next));
+    if (editingAnn === i) setEditingAnn(null);
+  }
+
+  async function saveGraphics() {
+    await AsyncStorage.setItem('lowerName', lowerName);
+    await AsyncStorage.setItem('lowerRole', lowerRole);
+    await AsyncStorage.setItem('tickerText', tickerText);
+    await AsyncStorage.setItem('countMins', countMins);
+    Alert.alert('Saved', 'Graphics settings saved.');
   }
 
   async function addRundown() {
@@ -226,13 +317,12 @@ export default function DirectorConsole() {
           <TouchableOpacity style={s.btn} onPress={handleConnectFacebook}>
             <Text style={s.btnText}>{fbDestinations.length ? 'Connected' : 'Connect'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.iconBtn}><Text style={s.iconBtnText}>⚙</Text></TouchableOpacity>
         </View>
       </View>
 
       <View style={s.statusRow}>
         <View style={s.liveChip}>
-          <Text style={s.liveChipText}>{liveItem ? `LIVE: ${liveItem.type === 'scripture' ? liveItem.reference : liveItem.title}` : 'No live item'}</Text>
+          <Text style={s.liveChipText}>{liveItem ? `LIVE: ${liveItem.type === 'scripture' ? liveItem.reference : liveItem.type === 'lower' ? liveItem.name : liveItem.type === 'countdown' ? 'Countdown' : liveItem.title}` : 'No live item'}</Text>
           {liveItem ? <TouchableOpacity onPress={clearItem}><Text style={s.clearText}> ✕ Clear</Text></TouchableOpacity> : null}
         </View>
         <Text style={s.roomText}>PAIR: {roomCode} · {roomStatus}</Text>
@@ -243,6 +333,14 @@ export default function DirectorConsole() {
           <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} />
           <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} />
         </View>
+
+        {liveItem?.type === 'hymn' && (
+          <View style={s.prompterRow}>
+            <TouchableOpacity style={s.prompterBtn} onPress={prompterPrev}><Text style={s.prompterBtnText}>▲ Prev</Text></TouchableOpacity>
+            <Text style={s.prompterLabel}>Line {(liveItem.lineIndex || 0) + 1} / {liveItem.lines.length}</Text>
+            <TouchableOpacity style={s.prompterBtn} onPress={prompterNext}><Text style={s.prompterBtnText}>Next ▼</Text></TouchableOpacity>
+          </View>
+        )}
 
         <View style={s.takeRow}>
           <View>
@@ -282,17 +380,26 @@ export default function DirectorConsole() {
 
         {tab === 'Scenes' && (
           <View style={s.panel}>
-            <Text style={s.panelTitle}>OUTPUT SCENES — Choose the next visual</Text>
+            <Text style={s.panelTitle}>OUTPUT SCENES — tap to push on air</Text>
             <View style={s.sceneGrid}>
               {SCENES.map((sc) => (
                 <TouchableOpacity key={sc} style={s.sceneCard} onPress={() => {
                   if (sc === 'Camera') setLayout('Camera Only');
                   else if (sc === 'Blank') setLayout('Blank');
-                  else if (sc === 'Lyrics' && songs[0]) pushItem({ type: 'hymn', title: songs[0].title, lines: songs[0].lines });
-                  else if (sc === 'Bible' && savedVerses[0]) pushItem({ type: 'scripture', title: savedVerses[0].reference, reference: savedVerses[0].reference, version: savedVerses[0].version, text: savedVerses[0].text });
+                  else if (sc === 'Lyrics') {
+                    if (songs[0]) pushItem({ type: 'hymn', title: songs[0].title, lines: songs[0].lines });
+                    else Alert.alert('No songs yet', 'Add a song in the Library tab first.');
+                  }
+                  else if (sc === 'Bible') {
+                    if (savedVerses[0]) pushItem({ type: 'scripture', title: savedVerses[0].reference, reference: savedVerses[0].reference, version: savedVerses[0].version, text: savedVerses[0].text });
+                    else Alert.alert('No verses yet', 'Save or fetch a verse in the Library tab first.');
+                  }
+                  else if (sc === 'Lower Third') pushItem({ type: 'lower', name: lowerName, role: lowerRole });
+                  else if (sc === 'Ticker') pushItem({ type: 'ticker', text: tickerText });
+                  else if (sc === 'Countdown') pushItem({ type: 'countdown', minutes: Math.max(1, parseInt(countMins || '5', 10)) });
                 }}>
                   <Text style={s.sceneName}>{sc}</Text>
-                  <Text style={s.sceneSub}>Queue</Text>
+                  <Text style={s.sceneSub}>Push</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -302,35 +409,60 @@ export default function DirectorConsole() {
         {tab === 'Library' && (
           <View style={s.panel}>
             <Text style={s.panelTitle}>LIBRARY</Text>
-            <Text style={s.sub}>Saved Verses</Text>
-            {savedVerses.map((v, i) => (
-              <TouchableOpacity key={i} style={s.row} onPress={() => pushItem({ type: 'scripture', title: v.reference, reference: v.reference, version: v.version, text: v.text })}>
-                <Text style={s.rowText}>{v.reference} ({v.version})</Text>
+
+            <Text style={s.sub}>Bible Verses (KJV + Yoruba)</Text>
+            <TextInput style={s.input} placeholder="Reference (John 3:16)" placeholderTextColor="#666" value={verseRef} onChangeText={setVerseRef} autoCapitalize="none" />
+            <View style={s.verRow}>
+              <TouchableOpacity style={[s.chip, verseVersion === 'KJV' && s.chipActive]} onPress={() => setVerseVersion('KJV')}><Text style={s.chipText}>KJV</Text></TouchableOpacity>
+              <TouchableOpacity style={[s.chip, verseVersion === 'YOR' && s.chipActive]} onPress={() => setVerseVersion('YOR')}><Text style={s.chipText}>YORUBA</Text></TouchableOpacity>
+              <TouchableOpacity style={[s.saveBtn, fetching && s.disabled]} onPress={fetchVerse} disabled={fetching}>
+                <Text style={s.saveBtnText}>{fetching ? 'Fetching…' : '🔍 Fetch Verse'}</Text>
               </TouchableOpacity>
-            ))}
-            <View style={s.addField}>
-              <TextInput style={s.input} placeholder="Reference (John 3:16)" placeholderTextColor="#666" value={verseRef} onChangeText={setVerseRef} />
-              <TextInput style={s.input} placeholder="Verse text" placeholderTextColor="#666" value={verseText} onChangeText={setVerseText} multiline />
-              <View style={s.verRow}>
-                <TouchableOpacity style={[s.chip, verseVersion === 'KJV' && s.chipActive]} onPress={() => setVerseVersion('KJV')}><Text style={s.chipText}>KJV</Text></TouchableOpacity>
-                <TouchableOpacity style={[s.chip, verseVersion === 'YOR' && s.chipActive]} onPress={() => setVerseVersion('YOR')}><Text style={s.chipText}>YOR</Text></TouchableOpacity>
-                <TouchableOpacity style={s.saveBtn} onPress={saveVerse}><Text style={s.saveBtnText}>+ Save Verse</Text></TouchableOpacity>
-              </View>
             </View>
-            <Text style={s.sub}>Songs</Text>
+            <TextInput style={s.input} placeholder="Verse text (auto-filled by Fetch)" placeholderTextColor="#666" value={verseText} onChangeText={setVerseText} multiline />
+            <TouchableOpacity style={s.saveBtn} onPress={saveVerse}><Text style={s.saveBtnText}>+ Save Verse</Text></TouchableOpacity>
+            {savedVerses.map((v, i) => (
+              <View key={i} style={s.rowFlex}>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => pushItem({ type: 'scripture', title: v.reference, reference: v.reference, version: v.version, text: v.text })}>
+                  <Text style={s.rowFlexText}>{v.reference} ({v.version})</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.delBtn} onPress={() => deleteVerse(i)}><Text style={s.miniBtnText}>Del</Text></TouchableOpacity>
+              </View>
+            ))}
+
+            <Text style={s.sub}>Songs / Hymns (Teleprompter) {editingSong !== null ? '(editing)' : ''}</Text>
+            <TextInput style={s.input} placeholder="Song title" placeholderTextColor="#666" value={songTitle} onChangeText={setSongTitle} />
+            <TextInput style={s.input} placeholder="Lyrics — one line per row (teleprompter advances line by line)" placeholderTextColor="#666" value={songLines} onChangeText={setSongLines} multiline />
+            <TouchableOpacity style={s.saveBtn} onPress={saveSong}><Text style={s.saveBtnText}>{editingSong !== null ? '✔ Update Song' : '+ Save Song'}</Text></TouchableOpacity>
             {songs.map((so, i) => (
-              <TouchableOpacity key={i} style={s.row} onPress={() => pushItem({ type: 'hymn', title: so.title, lines: so.lines })}>
-                <Text style={s.rowText}>{so.title}</Text>
-              </TouchableOpacity>
+              <View key={i} style={s.rowFlex}>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => pushItem({ type: 'hymn', title: so.title, lines: so.lines })}>
+                  <Text style={s.rowFlexText}>{so.title}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.miniBtn} onPress={() => editSong(i)}><Text style={s.miniBtnText}>Edit</Text></TouchableOpacity>
+                <TouchableOpacity style={s.delBtn} onPress={() => deleteSong(i)}><Text style={s.miniBtnText}>Del</Text></TouchableOpacity>
+              </View>
             ))}
-            <TouchableOpacity style={s.saveBtn} onPress={() => saveSong('New Hymn', ['Great is Thy faithfulness'])}><Text style={s.saveBtnText}>+ Add Song</Text></TouchableOpacity>
-            <Text style={s.sub}>Announcements</Text>
+
+            <Text style={s.sub}>Announcements {editingAnn !== null ? '(editing)' : ''}</Text>
+            <TextInput style={s.input} placeholder="Announcement text" placeholderTextColor="#666" value={annText} onChangeText={setAnnText} multiline />
+            <TouchableOpacity style={s.saveBtn} onPress={saveAnn}><Text style={s.saveBtnText}>{editingAnn !== null ? '✔ Update' : '+ Save Announcement'}</Text></TouchableOpacity>
             {announcements.map((a, i) => (
-              <TouchableOpacity key={i} style={s.row} onPress={() => pushItem({ type: 'announce', title: 'Announcement', text: a })}>
-                <Text style={s.rowText}>{a}</Text>
-              </TouchableOpacity>
+              <View key={i} style={s.rowFlex}>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => pushItem({ type: 'announce', title: 'Announcement', text: a })}>
+                  <Text style={s.rowFlexText}>{a}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.miniBtn} onPress={() => editAnn(i)}><Text style={s.miniBtnText}>Edit</Text></TouchableOpacity>
+                <TouchableOpacity style={s.delBtn} onPress={() => deleteAnn(i)}><Text style={s.miniBtnText}>Del</Text></TouchableOpacity>
+              </View>
             ))}
-            <TouchableOpacity style={s.saveBtn} onPress={() => { saveAnnouncement('Welcome to service'); }}><Text style={s.saveBtnText}>+ Add Announcement</Text></TouchableOpacity>
+
+            <Text style={s.sub}>Graphics (Lower Third / Ticker / Countdown)</Text>
+            <TextInput style={s.input} placeholder="Lower third name" placeholderTextColor="#666" value={lowerName} onChangeText={setLowerName} />
+            <TextInput style={s.input} placeholder="Lower third role/title" placeholderTextColor="#666" value={lowerRole} onChangeText={setLowerRole} />
+            <TextInput style={s.input} placeholder="Ticker text (auto-scrolls like WAP TV)" placeholderTextColor="#666" value={tickerText} onChangeText={setTickerText} />
+            <TextInput style={s.input} placeholder="Countdown minutes" placeholderTextColor="#666" value={countMins} onChangeText={setCountMins} keyboardType="number-pad" />
+            <TouchableOpacity style={s.saveBtn} onPress={saveGraphics}><Text style={s.saveBtnText}>💾 Save Graphics</Text></TouchableOpacity>
           </View>
         )}
 
@@ -358,8 +490,8 @@ export default function DirectorConsole() {
         {tab === 'Settings' && (
           <View style={s.panel}>
             <Text style={s.panelTitle}>SETTINGS</Text>
-            
-            <Text style={s.sub}>CUSTOM RTMP RELAY (Castr / Restream)</Text>
+
+            <Text style={s.sub}>CUSTOM RTMP (Works with ANY platform: Castr, Restream, YouTube, Twitch, Facebook via relay)</Text>
             <TextInput style={s.input} placeholder="rtmp://ingest.castr.io/live" placeholderTextColor="#666" value={rtmpUrl} onChangeText={(t) => { setRtmpUrl(t); AsyncStorage.setItem('rtmpUrl', t); }} autoCapitalize="none" />
             <TextInput style={s.input} placeholder="Stream key" placeholderTextColor="#666" value={rtmpKey} onChangeText={(t) => { setRtmpKey(t); AsyncStorage.setItem('rtmpKey', t); }} autoCapitalize="none" />
 
@@ -405,6 +537,68 @@ export default function DirectorConsole() {
   );
 }
 
+function CountdownBox({ minutes }: { minutes: number }) {
+  const [secs, setSecs] = useState(minutes * 60);
+  useEffect(() => {
+    setSecs(minutes * 60);
+    const t = setInterval(() => setSecs((v) => (v > 0 ? v - 1 : 0)), 1000);
+    return () => clearInterval(t);
+  }, [minutes]);
+  const mm = String(Math.floor(secs / 60)).padStart(2, '0');
+  const ss = String(secs % 60).padStart(2, '0');
+  return (
+    <View style={s.countBox}>
+      <Text style={[s.countText, secs <= 10 && { color: '#ef4444' }]}>{mm}:{ss}</Text>
+    </View>
+  );
+}
+
+function ClockBox() {
+  const [time, setTime] = useState(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const hh = String(time.getHours()).padStart(2, '0');
+  const mm = String(time.getMinutes()).padStart(2, '0');
+  const ss = String(time.getSeconds()).padStart(2, '0');
+  return (
+    <View style={s.clockBox}>
+      <Text style={s.clockText}>{hh}:{mm}:{ss}</Text>
+    </View>
+  );
+}
+
+function ScrollingTicker({ text }: { text: string }) {
+  const scrollAnim = useRef(new Animated.Value(0)).current;
+  const textWidth = text.length * 8; // rough estimate
+
+  useEffect(() => {
+    scrollAnim.setValue(0);
+    const animation = Animated.loop(
+      Animated.timing(scrollAnim, {
+        toValue: -textWidth - 200,
+        duration: text.length * 150,
+        useNativeDriver: true,
+      })
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [text, textWidth, scrollAnim]);
+
+  return (
+    <View style={s.ticker}>
+      <View style={s.newsBlock}><Text style={s.newsText}>NEWS</Text></View>
+      <View style={s.tickerScrollArea}>
+        <Animated.Text style={[s.tickerText, { transform: [{ translateX: scrollAnim }] }]}>
+          {text}     •     {text}     •     {text}
+        </Animated.Text>
+      </View>
+      <ClockBox />
+    </View>
+  );
+}
+
 function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, camera }: any) {
   const showCam = layout !== 'Blank' && camera;
   return (
@@ -425,17 +619,35 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
         )}
 
         {(layout === 'Worship' || layout === 'Lyrics Full') && liveItem?.type === 'hymn' && (
-          <View style={[s.lyricsBar, { backgroundColor: lyricsColor }]}>
-            <Text style={s.lyricsText} numberOfLines={2}>{liveItem.lines.join('  •  ')}</Text>
+          <View style={[s.teleprompter, { backgroundColor: lyricsColor }]}>
+            <Text style={s.teleprompterTitle}>{liveItem.title}</Text>
+            <Text style={s.teleprompterLine} numberOfLines={2}>
+              {liveItem.lines[liveItem.lineIndex || 0]}
+            </Text>
+            <Text style={s.teleprompterCount}>{(liveItem.lineIndex || 0) + 1}/{liveItem.lines.length}</Text>
           </View>
         )}
 
         {liveItem?.type === 'announce' && (
-          <View style={s.ticker}>
-            <View style={s.newsBlock}><Text style={s.newsText}>NEWS</Text></View>
-            <Text style={s.tickerText} numberOfLines={1}>{liveItem.text}</Text>
+          <View style={s.announceCard}>
+            <Text style={s.announceTitle}>ANNOUNCEMENT</Text>
+            <Text style={s.announceText}>{liveItem.text}</Text>
           </View>
         )}
+
+        {liveItem?.type === 'ticker' && <ScrollingTicker text={liveItem.text} />}
+
+        {liveItem?.type === 'lower' && (
+          <View style={s.lowerCard}>
+            <Text style={s.lowerName}>{liveItem.name}</Text>
+            <Text style={s.lowerRole}>{liveItem.role}</Text>
+          </View>
+        )}
+
+        {liveItem?.type === 'countdown' && <CountdownBox minutes={liveItem.minutes} />}
+
+        {/* Always show clock when live */}
+        {live && <ClockBox />}
 
         {pipOn && layout === 'Worship' && <View style={s.pip}><Text style={s.pipLabel}>PASTOR</Text></View>}
       </View>
@@ -458,8 +670,6 @@ const s = StyleSheet.create({
   pillText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   btn: { backgroundColor: '#1f6feb', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
   btnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-  iconBtn: { backgroundColor: '#21262d', width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  iconBtnText: { color: '#fff', fontSize: 16 },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 10, backgroundColor: '#0d1117' },
   liveChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#21262d', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
   liveChipText: { color: '#c9d1d9', fontSize: 11 },
@@ -477,12 +687,29 @@ const s = StyleSheet.create({
   scriptureFull: { left: 6, width: undefined, right: 6 },
   scriptureRef: { color: '#facc15', fontWeight: '800', fontSize: 13, marginBottom: 6 },
   scriptureText: { color: '#fff', fontWeight: '700', fontSize: 14, textAlign: 'center' },
-  lyricsBar: { position: 'absolute', left: 0, right: 0, bottom: 18, padding: 8 },
-  lyricsText: { color: '#0d1117', fontWeight: '800', fontSize: 13, textAlign: 'center' },
-  ticker: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', backgroundColor: '#000', height: 18 },
-  newsBlock: { backgroundColor: '#facc15', paddingHorizontal: 8, justifyContent: 'center' },
+  teleprompter: { position: 'absolute', left: 0, right: 0, bottom: 0, top: 0, justifyContent: 'center', alignItems: 'center', padding: 12 },
+  teleprompterTitle: { color: '#0d1117', fontSize: 10, fontWeight: '700', opacity: 0.7, marginBottom: 4 },
+  teleprompterLine: { color: '#0d1117', fontWeight: '800', fontSize: 22, textAlign: 'center', lineHeight: 28 },
+  teleprompterCount: { position: 'absolute', bottom: 4, right: 8, color: '#0d1117', fontSize: 9, fontWeight: '700', opacity: 0.6 },
+  prompterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, backgroundColor: '#161b22', padding: 8, borderRadius: 8 },
+  prompterBtn: { backgroundColor: '#ff6a00', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
+  prompterBtnText: { color: '#0d1117', fontWeight: '800', fontSize: 12 },
+  prompterLabel: { color: '#c9d1d9', fontSize: 12, fontWeight: '700' },
+  announceCard: { position: 'absolute', left: 10, right: 10, top: '30%', backgroundColor: 'rgba(13,17,23,0.9)', borderRadius: 10, padding: 12, alignItems: 'center' },
+  announceTitle: { color: '#ff6a00', fontWeight: '800', fontSize: 10, marginBottom: 4 },
+  announceText: { color: '#fff', fontWeight: '700', fontSize: 14, textAlign: 'center' },
+  ticker: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', backgroundColor: '#000', height: 22, alignItems: 'center' },
+  newsBlock: { backgroundColor: '#facc15', paddingHorizontal: 8, height: '100%', justifyContent: 'center' },
   newsText: { color: '#000', fontWeight: '800', fontSize: 10 },
-  tickerText: { color: '#fff', fontSize: 11, marginLeft: 8, marginTop: 2 },
+  tickerScrollArea: { flex: 1, overflow: 'hidden', height: '100%', justifyContent: 'center' },
+  tickerText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  clockBox: { backgroundColor: '#ef4444', paddingHorizontal: 6, height: '100%', justifyContent: 'center' },
+  clockText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  lowerCard: { position: 'absolute', left: 8, bottom: 28, backgroundColor: 'rgba(13,17,23,0.85)', borderLeftWidth: 3, borderLeftColor: '#ff6a00', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4 },
+  lowerName: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  lowerRole: { color: '#facc15', fontSize: 10, fontWeight: '600' },
+  countBox: { position: 'absolute', top: 6, left: '40%', width: 80, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8, alignItems: 'center', paddingVertical: 4 },
+  countText: { color: '#22c55e', fontWeight: '800', fontSize: 20 },
   pip: { position: 'absolute', top: 6, right: 6, width: 60, height: 44, backgroundColor: 'rgba(0,0,0,0.5)', borderWidth: 1, borderColor: '#fff', borderRadius: 4, justifyContent: 'flex-end', alignItems: 'flex-end', padding: 2 },
   pipLabel: { color: '#fff', fontSize: 7, fontWeight: '700' },
   layoutTag: { position: 'absolute', bottom: 4, left: 6, color: '#fff', fontSize: 8, fontWeight: '700', backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 4, borderRadius: 3 },
@@ -507,9 +734,14 @@ const s = StyleSheet.create({
   row: { backgroundColor: '#21262d', padding: 10, borderRadius: 8, marginBottom: 6 },
   rowActive: { backgroundColor: '#ff6a00' },
   rowText: { color: '#c9d1d9', fontSize: 13 },
+  rowFlex: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#21262d', padding: 8, borderRadius: 8, marginBottom: 6 },
+  rowFlexText: { color: '#c9d1d9', fontSize: 12 },
+  miniBtn: { backgroundColor: '#30363d', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
+  delBtn: { backgroundColor: '#7f1d1d', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
+  miniBtnText: { color: '#fff', fontSize: 10, fontWeight: '700' },
   addField: { marginBottom: 8 },
   input: { backgroundColor: '#0d1117', color: '#fff', padding: 10, borderRadius: 8, marginBottom: 6, borderWidth: 1, borderColor: '#30363d' },
-  verRow: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  verRow: { flexDirection: 'row', gap: 6, alignItems: 'center', marginBottom: 6 },
   saveBtn: { backgroundColor: '#238636', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, marginTop: 6, alignSelf: 'flex-start' },
   saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   sceneGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
