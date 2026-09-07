@@ -1,4 +1,5 @@
-const { withDangerousMod } = require('@expo/config-plugins');
+const { withDangerousMod, withProjectBuildGradle } = require('@expo/config-plugins');
+const { mergeContents } = require('@expo/config-plugins/build/utils/generateCode');
 const fs = require('fs');
 const path = require('path');
 
@@ -11,13 +12,43 @@ const PERMS = [
 ];
 
 module.exports = function withRtmpFix(config) {
-  return withDangerousMod(config, [
+  // Claude's idempotent Gradle override (tagged so it never double-inserts),
+  // applied to ALL modules so we don't depend on guessing the module name.
+  config = withProjectBuildGradle(config, (mod) => {
+    if (mod.modResults.language !== 'groovy') return mod;
+    const injection = `
+allprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty("android")) {
+            project.android {
+                compileSdkVersion 34
+                buildToolsVersion "34.0.0"
+                defaultConfig {
+                    minSdkVersion 21
+                    targetSdkVersion 34
+                }
+            }
+        }
+    }
+}`;
+    mod.modResults.contents = mergeContents({
+      tag: 'withRtmpFix-sdk-override',
+      src: mod.modResults.contents,
+      newSrc: injection,
+      anchor: /.*/,
+      offset: 0,
+      comment: '//',
+    }).contents;
+    return mod;
+  });
+
+  // Permissions + namespace/exported (kept from the working prebuild pass)
+  config = withDangerousMod(config, [
     'android',
     (mod) => {
-      const androidRoot = path.join(mod.modRequest.platformProjectRoot);
+      const androidRoot = mod.modRequest.platformProjectRoot;
       const libRoot = path.join(mod.modRequest.projectRoot, 'node_modules', 'react-native-nodemediaclient', 'android');
 
-      // 1) Patch library manifest: namespace + android:exported
       let pkg = 'com.nodemediaclient';
       const libManifest = path.join(libRoot, 'src', 'main', 'AndroidManifest.xml');
       if (fs.existsSync(libManifest)) {
@@ -27,24 +58,14 @@ module.exports = function withRtmpFix(config) {
         m = m.replace(/<(activity|service|receiver)(?![^>]*android:exported)/g, '$1 android:exported="true"');
         fs.writeFileSync(libManifest, m, 'utf8');
       }
-
-      // 2) Patch library build.gradle: namespace + compileSdk/targetSdk/minSdk (the actual fix for the Gradle error)
       const gradlePath = path.join(libRoot, 'build.gradle');
       if (fs.existsSync(gradlePath)) {
         let g = fs.readFileSync(gradlePath, 'utf8');
         if (!/namespace/.test(g)) {
           g = g.replace(/android\s*{/, "android {\n    namespace '" + pkg + "'");
+          fs.writeFileSync(gradlePath, g, 'utf8');
         }
-        if (!/compileSdk/.test(g)) {
-          g = g.replace(/android\s*{/, 'android {\n    compileSdkVersion 34\n    buildToolsVersion "34.0.0"');
-        }
-        if (!/defaultConfig[\s\S]*?minSdk/.test(g)) {
-          g = g.replace(/defaultConfig\s*{/, 'defaultConfig {\n        minSdkVersion 21\n        targetSdkVersion 34');
-        }
-        fs.writeFileSync(gradlePath, g, 'utf8');
       }
-
-      // 3) Add foreground-service permissions to the app manifest
       const appManifest = path.join(androidRoot, 'app', 'src', 'main', 'AndroidManifest.xml');
       if (fs.existsSync(appManifest)) {
         let am = fs.readFileSync(appManifest, 'utf8');
@@ -57,8 +78,9 @@ module.exports = function withRtmpFix(config) {
         });
         if (added) fs.writeFileSync(appManifest, am, 'utf8');
       }
-
       return mod;
     },
   ]);
+
+  return config;
 };
