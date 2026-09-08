@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Alert, Switch, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Alert, Switch, Animated, requireNativeComponent } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -12,15 +12,16 @@ import {
   listFacebookDestinations, createFacebookLiveVideo, endFacebookLiveVideo,
   type FacebookDestination,
 } from '@/lib/facebookLive';
-import { startPublishing, stopPublishing } from '@/lib/streamingService';
+import { startPublishing, stopPublishing, setOverlayState } from '@/lib/streamingService';
 import * as Linking from 'expo-linking';
+
+const NativeCompositorView = requireNativeComponent<any>('NativeCompositorView');
 
 const LAYOUTS: Layout[] = ['Worship', 'Sermon', 'Scripture Full', 'Lyrics Full', 'Camera Only', 'Blank'];
 const SCENES = ['Camera', 'Bible', 'Lyrics', 'Lower Third', 'Ticker', 'Countdown', 'Blank'] as const;
 const CATEGORIES = ['Praise', 'Worship', 'Scripture', 'Sermon', 'Offering', 'Announce', 'Prayer', 'Special', 'Closing'];
 const GRADE_PRESETS: GradeSettings['preset'][] = ['Natural', 'Warm Church', 'Cool', 'Cinematic', 'Vivid', 'Flat/Log lift'];
 
-// Resolution -> {width,height,videoBitrate}
 const RES_MAP: Record<string, { width: number; height: number; videoBitrate: number }> = {
   '720p30': { width: 1280, height: 720, videoBitrate: 2500 },
   '1080p30': { width: 1920, height: 1080, videoBitrate: 4500 },
@@ -29,6 +30,7 @@ const RES_MAP: Record<string, { width: number; height: number; videoBitrate: num
 
 type Tab = 'Scenes' | 'Library' | 'Rundown' | 'Settings';
 type RundownItem = { id: string; text: string; category: string };
+type PendingRequest = { secureStreamUrl: string; width: number; height: number; videoBitrate: number };
 
 async function fetchBibleVerse(reference: string, version: 'KJV' | 'YOR'): Promise<{ reference: string; text: string; found: boolean }> {
   const translation = version === 'YOR' ? 'yoruba' : 'kjv';
@@ -55,9 +57,12 @@ export default function DirectorConsole() {
   const previousLayout = useRef<Layout>('Camera Only');
 
   const [isLive, setIsLive] = useState(false);
+  const [streamMode, setStreamMode] = useState(false);
+  const [pendingReq, setPendingReq] = useState<PendingRequest | null>(null);
+  const startCalled = useRef(false);
+
   const [fbDestinations, setFbDestinations] = useState<FacebookDestination[]>([]);
   const [selectedDest, setSelectedDest] = useState<FacebookDestination | null>(null);
-  const liveVideoId = useRef<string | null>(null);
 
   const [roomCode, setRoomCode] = useState('LIGHT-247');
   const [roomStatus, setRoomStatus] = useState('Not connected');
@@ -96,12 +101,10 @@ export default function DirectorConsole() {
   const [rtmpUrl, setRtmpUrl] = useState('');
   const [rtmpKey, setRtmpKey] = useState('');
 
+  const [countSecs, setCountSecs] = useState(0);
+
   useEffect(() => {
     (async () => {
-      const token = await getFacebookToken();
-      if (token) {
-        try { setFbDestinations(await listFacebookDestinations(token)); } catch {}
-      }
       const sv = await AsyncStorage.getItem('savedVerses'); if (sv) setSavedVerses(JSON.parse(sv));
       const so = await AsyncStorage.getItem('songs'); if (so) setSongs(JSON.parse(so));
       const an = await AsyncStorage.getItem('announcements'); if (an) setAnnouncements(JSON.parse(an));
@@ -124,6 +127,58 @@ export default function DirectorConsole() {
     AsyncStorage.setItem('roomCode', roomCode);
     return () => conn.disconnect();
   }, [roomCode]);
+
+  // Countdown ticker for the native overlay
+  useEffect(() => {
+    if (liveItem?.type === 'countdown') {
+      setCountSecs(liveItem.minutes * 60);
+      const t = setInterval(() => setCountSecs((v) => (v > 0 ? v - 1 : 0)), 1000);
+      return () => clearInterval(t);
+    }
+  }, [liveItem]);
+
+  // Sync overlay state into the native compositor
+  useEffect(() => {
+    const nativeLayout = (programLayout || '').replace(/\s+/g, '');
+    const state = {
+      layout: nativeLayout,
+      scripture: liveItem?.type === 'scripture' ? { reference: liveItem.reference, text: liveItem.text } : null,
+      lyrics: liveItem?.type === 'hymn' ? { title: liveItem.title, line: liveItem.lines[liveItem.lineIndex || 0] || '', index: liveItem.lineIndex || 0, total: liveItem.lines.length } : null,
+      ticker: liveItem?.type === 'ticker' ? { text: liveItem.text, scrollSpeed: 50 } : null,
+      lowerThird: liveItem?.type === 'lower' ? { name: liveItem.name, role: liveItem.role } : null,
+      countdown: liveItem?.type === 'countdown' ? { secondsLeft: countSecs } : null,
+    };
+    setOverlayState(state as any).catch(() => {});
+  }, [liveItem, programLayout, countSecs]);
+
+  // Start the native publisher only AFTER expo-camera views have unmounted
+  useEffect(() => {
+    if (!streamMode || !pendingReq || startCalled.current) return;
+    startCalled.current = true;
+    const req = pendingReq;
+    const t = setTimeout(() => {
+      startPublishing(req, {
+        onConnected: () => setIsLive(true),
+        onDisconnected: () => {
+          setIsLive(false);
+          setStreamMode(false);
+          startCalled.current = false;
+        },
+        onError: (error) => {
+          Alert.alert('Stream Error', error);
+          setIsLive(false);
+          setStreamMode(false);
+          startCalled.current = false;
+        },
+      }).catch((e: any) => {
+        Alert.alert('Go Live failed', e?.message ?? String(e));
+        setIsLive(false);
+        setStreamMode(false);
+        startCalled.current = false;
+      });
+    }, 500);
+    return () => clearTimeout(t);
+  }, [streamMode, pendingReq]);
 
   function handleRoomCommand(cmd: RoomCommand) {
     if (cmd.type === 'layout') { setProgramLayout(cmd.layout); }
@@ -182,34 +237,22 @@ export default function DirectorConsole() {
 
   async function handleGoLive() {
     const res = RES_MAP[resolution] || RES_MAP['1080p30'];
-    if (rtmpUrl.trim()) {
-      try {
-        const baseUrl = rtmpUrl.trim().replace(/\/$/, '');
-        const url = rtmpKey.trim() ? `${baseUrl}/${rtmpKey.trim()}` : baseUrl;
-        await startPublishing({ secureStreamUrl: url, grade, width: res.width, height: res.height, videoBitrate: res.videoBitrate });
-        setIsLive(true);
-      } catch (e: any) { Alert.alert('Go Live failed', e.message); }
+    let url = rtmpUrl.trim().replace(/\/$/, '');
+    const key = rtmpKey.trim();
+    if (key && !url.includes(key)) url = `${url}/${key}`;
+    if (!url) {
+      Alert.alert('No stream URL', 'Paste your RTMP URL and stream key in Settings first (YouTube, Twitch, Castr, Restream, or Facebook Live Producer).');
       return;
     }
-    if (!selectedDest) { Alert.alert('Pick a destination', 'Connect Facebook and choose a Page, or enter a Custom RTMP URL in Settings.'); return; }
-    try {
-      const token = (await getFacebookToken())!;
-      const video = await createFacebookLiveVideo(selectedDest);
-      liveVideoId.current = video.id;
-      await startPublishing({ secureStreamUrl: video.secureStreamUrl, grade, width: res.width, height: res.height, videoBitrate: res.videoBitrate });
-      setIsLive(true);
-    } catch (e: any) { Alert.alert('Go Live failed', e.message); }
+    setPendingReq({ secureStreamUrl: url, width: res.width, height: res.height, videoBitrate: res.videoBitrate });
+    setStreamMode(true);
   }
 
   async function handleStop() {
-    try {
-      await stopPublishing();
-      if (liveVideoId.current) {
-        const token = (await getFacebookToken())!;
-        await endFacebookLiveVideo(liveVideoId.current, token);
-      }
-    } catch {}
-    liveVideoId.current = null;
+    try { await stopPublishing(); } catch {}
+    startCalled.current = false;
+    setPendingReq(null);
+    setStreamMode(false);
     setIsLive(false);
   }
 
@@ -305,7 +348,7 @@ export default function DirectorConsole() {
     else clearItem();
   }
 
-  const canGoLive = !!selectedDest || rtmpUrl.trim().length > 0;
+  const canGoLive = rtmpUrl.trim().length > 0 || !!selectedDest;
 
   return (
     <View style={s.root}>
@@ -319,9 +362,6 @@ export default function DirectorConsole() {
             <View style={[s.dot, isLive && s.dotLive]} />
             <Text style={s.pillText}>{isLive ? 'ON AIR' : 'STANDBY'}</Text>
           </View>
-          <TouchableOpacity style={s.btn} onPress={handleConnectFacebook}>
-            <Text style={s.btnText}>{fbDestinations.length ? 'Connected' : 'Connect'}</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
@@ -335,8 +375,8 @@ export default function DirectorConsole() {
 
       <ScrollView contentContainerStyle={s.scroll}>
         <View style={s.monitors}>
-          <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} />
-          <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} />
+          <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} hideCam={streamMode} />
+          <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} nativeCam={streamMode} />
         </View>
 
         {liveItem?.type === 'hymn' && (
@@ -511,7 +551,7 @@ export default function DirectorConsole() {
                 <TouchableOpacity key={g} style={[s.chip, grade.preset === g && s.chipActive]} onPress={() => { const ng = { ...grade, preset: g }; setGrade(ng); room.current?.publish({ type: 'grade', grade: ng }); }}><Text style={s.chipText}>{g}</Text></TouchableOpacity>
               ))}
             </View>
-            <Text style={s.note}>Note: HD resolution is applied to the encoder at Go Live. Full cinematic color-grading of the RTMP output requires a Phase-2 GPU pipeline; presets are stored and synced for that upgrade.</Text>
+            <Text style={s.note}>Note: HD resolution is applied to the encoder at Go Live. Overlays (scripture, lyrics, ticker, lower third, countdown) are baked into the stream by the native compositor.</Text>
             <View style={s.settingRow}><Text style={s.settingLabel}>Room Code</Text>
               <TextInput style={[s.input, { flex: 1 }]} value={roomCode} onChangeText={setRoomCode} autoCapitalize="characters" />
             </View>
@@ -528,7 +568,7 @@ export default function DirectorConsole() {
         ))}
       </View>
 
-      {!permission?.granted && (
+      {!permission?.granted && !streamMode && (
         <View style={s.camOverlay}>
           <Text style={s.camText}>Camera permission needed for streaming</Text>
           <TouchableOpacity style={s.goBtn} onPress={requestPermission}><Text style={s.goBtnText}>Grant Camera</Text></TouchableOpacity>
@@ -570,18 +610,17 @@ function ClockBox() {
   );
 }
 
-// Single-line, slow, continuous marquee
 function ScrollingTicker({ text }: { text: string }) {
   const scrollAnim = useRef(new Animated.Value(0)).current;
   const charWidth = 7;
   const totalWidth = text.length * charWidth;
 
   useEffect(() => {
-    scrollAnim.setValue(200); // start off-screen right
+    scrollAnim.setValue(200);
     const animation = Animated.loop(
       Animated.timing(scrollAnim, {
         toValue: -totalWidth,
-        duration: Math.max(8000, text.length * 220), // slow: ~220ms per char
+        duration: Math.max(8000, text.length * 220),
         useNativeDriver: true,
       })
     );
@@ -602,7 +641,7 @@ function ScrollingTicker({ text }: { text: string }) {
   );
 }
 
-function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, camera }: any) {
+function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, camera, nativeCam, hideCam }: any) {
   const showCam = layout !== 'Blank' && camera;
   return (
     <View style={s.monitor}>
@@ -611,9 +650,14 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
         {live ? <Text style={s.liveTag}>● LIVE</Text> : null}
       </View>
       <View style={s.monitorBody}>
-        {/* Camera ALWAYS renders underneath (except Blank) so overlays sit on top of live video */}
-        {showCam ? <CameraView style={StyleSheet.absoluteFill} facing="back" /> : <View style={s.blankBg} />}
-        {layout === 'Blank' ? <View style={s.blankBg} /> : null}
+        {nativeCam ? (
+          <NativeCompositorView style={StyleSheet.absoluteFill} />
+        ) : showCam && !hideCam ? (
+          <CameraView style={StyleSheet.absoluteFill} facing="back" />
+        ) : (
+          <View style={s.blankBg} />
+        )}
+        {layout === 'Blank' && !nativeCam ? <View style={s.blankBg} /> : null}
 
         {(layout === 'Sermon' || layout === 'Scripture Full') && liveItem?.type === 'scripture' && (
           <View style={[s.scriptureCard, layout === 'Scripture Full' && s.scriptureFull]}>
@@ -622,7 +666,6 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
           </View>
         )}
 
-        {/* LYRICS = bottom bar OVER the camera (pastor sees himself + the line) */}
         {(layout === 'Worship' || layout === 'Lyrics Full') && liveItem?.type === 'hymn' && (
           <View style={[s.lyricsBar, { backgroundColor: lyricsColor }]}>
             <Text style={s.lyricsTitle}>{liveItem.title}</Text>
