@@ -1,4 +1,4 @@
-herepackage com.lightdirector;
+package com.lightdirector;
 
 import com.facebook.react.uimanager.SimpleViewManager;
 import com.facebook.react.uimanager.ThemedReactContext;
