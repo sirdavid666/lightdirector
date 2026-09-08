@@ -249,7 +249,9 @@ export default function DirectorConsole() {
   async function saveSong() {
     if (!songTitle.trim() || !songLines.trim()) return;
     const lines = songLines.split('\n').map((l) => l.trim()).filter(Boolean);
-    const next = editingSong !== null ? songs.map((s, i) => (i === editingSong ? { title: songTitle.trim(), lines } : songs[i]) : [...songs, { title: songTitle.trim(), lines }]);
+    const next = editingSong !== null
+      ? songs.map((s, i) => (i === editingSong ? { title: songTitle.trim(), lines } : songs[i]))
+      : [...songs, { title: songTitle.trim(), lines }];
     setSongs(next);
     await AsyncStorage.setItem('songs', JSON.stringify(next));
     setSongTitle(''); setSongLines(''); setEditingSong(null);
