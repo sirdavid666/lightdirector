@@ -1,211 +1,135 @@
-here/*
-Verified facts for pedroSG94 rtmp-rtsp-stream-client-java 2.2.2:
-BaseFilterRender fully-qualified name: com.pedro.rtplibrary.filter.BaseFilterRender
-Abstract method signatures:
-  public abstract String getVertexShader();
-  public abstract String getFragmentShader();
-Built-in filter renders present in 2.2.2:
-  SepiaFilterRender, GrayScaleFilterRender, SaturationFilterRender, BeautyFilterRender, ContrastFilterRender
-GLES20 program-compile helper: com.pedro.opengl.util.GlUtil.createProgram(String vertexSrc, String fragmentSrc)
-*/
-
 package com.lightdirector;
 
+import android.content.Context;
 import android.opengl.GLES20;
-import java.nio.FloatBuffer;
-import com.pedro.rtplibrary.filter.BaseFilterRender;
-import com.pedro.opengl.util.GlUtil;
-import com.pedro.rtplibrary.filter.BeautyFilterRender;
+import android.opengl.Matrix;
+import com.pedro.encoder.input.gl.render.filters.BaseFilterRender;
+import com.pedro.encoder.input.gl.render.filters.BeautyFilterRender;
+import com.pedro.encoder.utils.gl.GlUtil;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
-/** Container for grade filter renders. */
 public final class GradeFilters {
+  private GradeFilters() {}
 
-    private GradeFilters() {}
+  private static final String VERTEX = "attribute vec4 aPosition;\n"
+      + "attribute vec4 aTextureCoord;\n"
+      + "uniform mat4 uMVPMatrix;\n"
+      + "uniform mat4 uSTMatrix;\n"
+      + "varying vec2 vTextureCoord;\n"
+      + "void main(){\n"
+      + "  gl_Position = uMVPMatrix * aPosition;\n"
+      + "  vTextureCoord = (uSTMatrix * aTextureCoord).xy;\n"
+      + "}\n";
 
-    /** Returns a filter render for the given preset name or null if unsupported. */
-    public static BaseFilterRender forPreset(String preset) {
-        if (preset == null) return null;
-        switch (preset) {
-            case "Natural":     return null;
-            case "WarmChurch":  return new WarmChurchFilter();
-            case "Cool":        return new CoolFilter();
-            case "Cinematic":   return new CinematicFilter();
-            case "Vivid":       return new VividFilter();
-            case "FlatLogLift": return new FlatLogLiftFilter();
-            case "Vignette":    return new VignetteFilter();
-            case "Noir":        return new NoirFilter();
-            case "Retro":       return new RetroFilter();
-            case "Beauty":      return new BeautyFilterRender();
-            default:            return null;
-        }
+  private static final String HEAD = "precision mediump float;\n"
+      + "uniform sampler2D uSampler;\n"
+      + "varying vec2 vTextureCoord;\n"
+      + "void main(){\n"
+      + "  vec4 c = texture2D(uSampler, vTextureCoord);\n";
+
+  private static final String WARM = HEAD
+      + "  c.r = min(c.r * 1.15, 1.0);\n  c.b = c.b * 0.88;\n"
+      + "  float g = dot(c.rgb, vec3(0.333));\n  c.rgb = mix(vec3(g), c.rgb, 1.1);\n"
+      + "  gl_FragColor = c;\n}\n";
+  private static final String COOL = HEAD
+      + "  c.b = min(c.b * 1.15, 1.0);\n"
+      + "  float g = dot(c.rgb, vec3(0.333));\n  c.rgb = mix(vec3(g), c.rgb, 0.85);\n"
+      + "  gl_FragColor = c;\n}\n";
+  private static final String CINE = HEAD
+      + "  c.rgb = (c.rgb - 0.5) * 1.15 + 0.5;\n"
+      + "  float g = dot(c.rgb, vec3(0.333));\n  c.rgb = mix(vec3(g), c.rgb, 0.9);\n"
+      + "  vec2 p = vTextureCoord - 0.5;\n  c.rgb *= smoothstep(0.85, 0.45, length(p));\n"
+      + "  gl_FragColor = c;\n}\n";
+  private static final String VIVID = HEAD
+      + "  float g = dot(c.rgb, vec3(0.333));\n  c.rgb = mix(vec3(g), c.rgb, 1.6);\n"
+      + "  c.rgb = (c.rgb - 0.5) * 1.2 + 0.5;\n"
+      + "  gl_FragColor = c;\n}\n";
+  private static final String LIFT = HEAD
+      + "  c.rgb = pow(c.rgb, vec3(0.85));\n"
+      + "  c.rgb = mix(c.rgb, vec3(0.5), 0.08);\n"
+      + "  gl_FragColor = c;\n}\n";
+  private static final String VIGN = HEAD
+      + "  vec2 p = vTextureCoord - 0.5;\n  c.rgb *= smoothstep(0.8, 0.45, length(p));\n"
+      + "  gl_FragColor = c;\n}\n";
+  private static final String NOIR = HEAD
+      + "  float g = dot(c.rgb, vec3(0.333));\n  g = (g - 0.5) * 1.3 + 0.5;\n"
+      + "  gl_FragColor = vec4(g, g, g, c.a);\n}\n";
+  private static final String RETRO = HEAD
+      + "  vec3 s = vec3(dot(c.rgb, vec3(0.393, 0.769, 0.189)), dot(c.rgb, vec3(0.349, 0.686, 0.168)), dot(c.rgb, vec3(0.272, 0.534, 0.131)));\n"
+      + "  float n = fract(sin(dot(vTextureCoord, vec2(12.9898, 78.233))) * 43758.5453) * 0.08 - 0.04;\n"
+      + "  gl_FragColor = vec4(s + n, c.a);\n}\n";
+
+  public static BaseFilterRender forPreset(String preset) {
+    if (preset == null) return null;
+    switch (preset) {
+      case "WarmChurch": return new ShaderFilter(WARM);
+      case "Cool": return new ShaderFilter(COOL);
+      case "Cinematic": return new ShaderFilter(CINE);
+      case "Vivid": return new ShaderFilter(VIVID);
+      case "FlatLogLift": return new ShaderFilter(LIFT);
+      case "Vignette": return new ShaderFilter(VIGN);
+      case "Noir": return new ShaderFilter(NOIR);
+      case "Retro": return new ShaderFilter(RETRO);
+      case "Beauty": return new BeautyFilterRender();
+      default: return null;
+    }
+  }
+
+  public static class ShaderFilter extends BaseFilterRender {
+    private final float[] squareVertexData = {
+        -1f, -1f, 0f, 0f, 0f,
+        1f, -1f, 0f, 1f, 0f,
+        -1f, 1f, 0f, 0f, 1f,
+        1f, 1f, 0f, 1f, 1f };
+    private final String fragment;
+    private int program = -1;
+    private int aPositionHandle = -1;
+    private int aTextureHandle = -1;
+    private int uMVPMatrixHandle = -1;
+    private int uSTMatrixHandle = -1;
+    private int uSamplerHandle = -1;
+
+    public ShaderFilter(String fragment) {
+      this.fragment = fragment;
+      squareVertex = ByteBuffer.allocateDirect(squareVertexData.length * FLOAT_SIZE_BYTES)
+          .order(ByteOrder.nativeOrder()).asFloatBuffer();
+      squareVertex.put(squareVertexData).position(0);
+      Matrix.setIdentityM(MVPMatrix, 0);
+      Matrix.setIdentityM(STMatrix, 0);
     }
 
-    // Shared fullscreen vertex shader
-    private static final String VERTEX_SHADER =
-            "attribute vec4 aPosition;" +
-            "attribute vec2 aTextureCoord;" +
-            "varying vec2 vTextureCoord;" +
-            "void main() {" +
-            "  gl_Position = aPosition;" +
-            "  vTextureCoord = aTextureCoord;" +
-            "}";
-
-    // Helper base: subclasses only provide fragment shader
-    private static abstract class SimpleFilter extends BaseFilterRender {
-        @Override
-        public String getVertexShader() { return VERTEX_SHADER; }
-        @Override
-        public abstract String getFragmentShader();
+    @Override
+    protected void initGlFilter(Context context) {
+      program = GlUtil.createProgram(VERTEX, fragment);
+      aPositionHandle = GLES20.glGetAttribLocation(program, "aPosition");
+      aTextureHandle = GLES20.glGetAttribLocation(program, "aTextureCoord");
+      uMVPMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
+      uSTMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix");
+      uSamplerHandle = GLES20.glGetUniformLocation(program, "uSampler");
     }
 
-    // 1. WarmChurch – warm tint (+R, -B) + slight saturation boost
-    private static class WarmChurchFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  c.r = min(c.r * 1.2, 1.0);" +
-                "  c.b = c.b * 0.8;" +
-                "  float gray = dot(c.rgb, vec3(0.33));" +
-                "  c.rgb = mix(vec3(gray), c.rgb, 1.1);" +
-                "  gl_FragColor = c;" +
-                "}";
-        }
+    @Override
+    protected void drawFilter() {
+      GLES20.glUseProgram(program);
+      squareVertex.position(SQUARE_VERTEX_DATA_POS_OFFSET);
+      GLES20.glVertexAttribPointer(aPositionHandle, 3, GLES20.GL_FLOAT, false,
+          SQUARE_VERTEX_DATA_STRIDE_BYTES, squareVertex);
+      GLES20.glEnableVertexAttribArray(aPositionHandle);
+      squareVertex.position(SQUARE_VERTEX_DATA_UV_OFFSET);
+      GLES20.glVertexAttribPointer(aTextureHandle, 2, GLES20.GL_FLOAT, false,
+          SQUARE_VERTEX_DATA_STRIDE_BYTES, squareVertex);
+      GLES20.glEnableVertexAttribArray(aTextureHandle);
+      GLES20.glUniformMatrix4fv(uMVPMatrixHandle, 1, false, MVPMatrix, 0);
+      GLES20.glUniformMatrix4fv(uSTMatrixHandle, 1, false, STMatrix, 0);
+      GLES20.glUniform1i(uSamplerHandle, 4);
+      GLES20.glActiveTexture(GLES20.GL_TEXTURE4);
+      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexId);
     }
 
-    // 2. Cool – blue tint, desaturate
-    private static class CoolFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  c.b = min(c.b * 1.2, 1.0);" +
-                "  float gray = dot(c.rgb, vec3(0.33));" +
-                "  c.rgb = mix(vec3(gray), c.rgb, 0.85);" +
-                "  gl_FragColor = c;" +
-                "}";
-        }
+    @Override
+    public void release() {
+      if (program != -1) GLES20.glDeleteProgram(program);
     }
-
-    // 3. Cinematic – contrast + vignette + slight desaturation
-    private static class CinematicFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec2 pos = vTextureCoord - 0.5;" +
-                "  float vignette = smoothstep(0.8, 0.5, length(pos));" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  c.rgb = ((c.rgb - 0.5) * 1.15) + 0.5;" +
-                "  float gray = dot(c.rgb, vec3(0.33));" +
-                "  c.rgb = mix(vec3(gray), c.rgb, 0.85);" +
-                "  c.rgb *= vignette;" +
-                "  gl_FragColor = c;" +
-                "}";
-        }
-    }
-
-    // 4. Vivid – high saturation + contrast
-    private static class VividFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  float gray = dot(c.rgb, vec3(0.33));" +
-                "  c.rgb = mix(vec3(gray), c.rgb, 1.6);" +
-                "  c.rgb = ((c.rgb - 0.5) * 1.2) + 0.5;" +
-                "  gl_FragColor = c;" +
-                "}";
-        }
-    }
-
-    // 5. FlatLogLift – gamma lift + highlight compression
-    private static class FlatLogLiftFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  c.rgb = pow(c.rgb, vec3(0.85));" +
-                "  c.rgb = c.rgb / (c.rgb + vec3(1.0));" +
-                "  gl_FragColor = c;" +
-                "}";
-        }
-    }
-
-    // 6. Vignette – radial darkening
-    private static class VignetteFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec2 pos = vTextureCoord - 0.5;" +
-                "  float dist = length(pos);" +
-                "  float vignette = smoothstep(0.7, 0.5, dist);" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  c.rgb *= vignette;" +
-                "  gl_FragColor = c;" +
-                "}";
-        }
-    }
-
-    // 7. Noir – grayscale + strong contrast
-    private static class NoirFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  float gray = dot(c.rgb, vec3(0.33));" +
-                "  gray = ((gray - 0.5) * 1.3) + 0.5;" +
-                "  gl_FragColor = vec4(gray, gray, gray, c.a);" +
-                "}";
-        }
-    }
-
-    // 8. Retro – sepia matrix + subtle grain
-    private static class RetroFilter extends SimpleFilter {
-        @Override
-        public String getFragmentShader() {
-            return
-                "precision mediump float;" +
-                "varying vec2 vTextureCoord;" +
-                "uniform sampler2D sTexture;" +
-                "void main() {" +
-                "  vec4 c = texture2D(sTexture, vTextureCoord);" +
-                "  // sepia matrix" +
-                "  float r = dot(c.rgb, vec3(0.393, 0.769, 0.189));" +
-                "  float g = dot(c.rgb, vec3(0.349, 0.686, 0.168));" +
-                "  float b = dot(c.rgb, vec3(0.272, 0.534, 0.131));" +
-                "  // subtle grain" +
-                "  float grain = fract(sin(dot(vTextureCoord, vec2(12.9898,78.233))) * 43758.5453);" +
-                "  grain = (grain - 0.5) * 0.06;" +
-                "  gl_FragColor = vec4(r + grain, g + grain, b + grain, c.a);" +
-                "}";
-        }
-    }
-              }
+  }
+}
