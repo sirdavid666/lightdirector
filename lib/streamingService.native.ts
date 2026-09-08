@@ -1,23 +1,23 @@
 import { NativeModules, NativeEventEmitter, EmitterSubscription } from 'react-native';
 
-type OverlayState = {
+export type OverlayState = {
   scripture: { reference: string; text: string } | null;
   lyrics: { title: string; line: string; index: number; total: number } | null;
   ticker: { text: string; scrollSpeed: number } | null;
   lowerThird: { name: string; role: string } | null;
   countdown: { secondsLeft: number } | null;
-  layout: 'Worship' | 'Sermon' | 'ScriptureFull' | 'LyricsFull' | 'CameraOnly' | 'Blank';
+  layout: string;
 };
 
-type PublishRequest = {
+export type PublishRequest = {
   secureStreamUrl: string;
-  grade?: any;
-  width?: number;
-  height?: number;
-  videoBitrate?: number;
+  width: number;
+  height: number;
+  fps: number;
+  videoBitrate: number;
 };
 
-type StreamCallbacks = {
+export type StreamCallbacks = {
   onConnected?: () => void;
   onDisconnected?: () => void;
   onError?: (error: string) => void;
@@ -31,18 +31,18 @@ export async function startPublishing(
   request: PublishRequest,
   callbacks?: StreamCallbacks,
 ): Promise<void> {
-  const onConnected = eventEmitter.addListener('onStreamConnected', () => {
-    callbacks?.onConnected?.();
-  });
-  const onDisconnected = eventEmitter.addListener('onStreamDisconnected', () => {
-    callbacks?.onDisconnected?.();
-  });
-  const onError = eventEmitter.addListener('onStreamError', (e: { error: string }) => {
-    callbacks?.onError?.(e.error);
-  });
+  const onConnected = eventEmitter.addListener('onStreamConnected', () => callbacks?.onConnected?.());
+  const onDisconnected = eventEmitter.addListener('onStreamDisconnected', () => callbacks?.onDisconnected?.());
+  const onError = eventEmitter.addListener('onStreamError', (e: { error: string }) => callbacks?.onError?.(e.error));
   listeners.push(onConnected, onDisconnected, onError);
   try {
-    await nativeCompositor.startStream(request.secureStreamUrl);
+    await nativeCompositor.startStreamWithConfig(
+      request.secureStreamUrl,
+      request.width,
+      request.height,
+      request.fps,
+      request.videoBitrate
+    );
   } catch (err) {
     for (const sub of listeners) sub.remove();
     listeners.length = 0;
@@ -57,15 +57,29 @@ export async function stopPublishing(): Promise<void> {
 }
 
 export async function setOverlayState(state: OverlayState): Promise<void> {
-  const json = JSON.stringify(state);
-  await nativeCompositor.setOverlayState(json);
+  await nativeCompositor.setOverlayState(JSON.stringify(state));
 }
 
-export {
-  OverlayState,
-  PublishRequest,
-  StreamCallbacks,
-  startPublishing,
-  stopPublishing,
-  setOverlayState,
-};
+export async function setGrade(preset: string): Promise<void> {
+  await nativeCompositor.setGrade(preset);
+}
+
+export async function setAudioBalance(micGain: number, mediaGain: number): Promise<void> {
+  await nativeCompositor.setAudioBalance(micGain, mediaGain);
+}
+
+export async function showImageMedia(filePath: string): Promise<void> {
+  await nativeCompositor.showImageMedia(filePath);
+}
+
+export async function clearImageMedia(): Promise<void> {
+  await nativeCompositor.clearImageMedia();
+}
+
+export async function startFileVideoStream(filePath: string, url: string): Promise<void> {
+  await nativeCompositor.startFileVideoStream(filePath, url);
+}
+
+export async function stopFileStream(): Promise<void> {
+  await nativeCompositor.stopFileStream();
+}
