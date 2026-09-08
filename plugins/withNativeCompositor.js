@@ -17,7 +17,7 @@ const JAVA_FILES = [
   'NativeCompositorPackage.java',
 ];
 
-const RTMP_DEP = "implementation 'com.github.pedroSG94:RootEncoder:2.2.2'";
+const RTMP_DEP = "implementation 'com.github.pedroSG94.rtmp-rtsp-stream-client-java:rtplibrary:2.2.2'";
 const PERMISSIONS = [
   'android.permission.INTERNET',
   'android.permission.CAMERA',
