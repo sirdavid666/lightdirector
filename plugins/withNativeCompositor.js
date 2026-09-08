@@ -6,7 +6,6 @@ const {
   withAndroidManifest,
   withSettingsGradle,
   withMainApplication,
-  AndroidConfig,
 } = require('@expo/config-plugins');
 
 const JAVA_FILES = [
@@ -105,9 +104,16 @@ function withRtmpDependency(config) {
 function withPermissions(config) {
   return withAndroidManifest(config, (config) => {
     const manifest = config.modResults.manifest;
-    const existing = AndroidConfig.Permissions.getPermissions(manifest) || [];
+    if (!manifest['uses-permission']) {
+      manifest['uses-permission'] = [];
+    }
     PERMISSIONS.forEach((perm) => {
-      if (!existing.includes(perm)) AndroidConfig.Permissions.addPermission(manifest, perm);
+      const exists = manifest['uses-permission'].some(
+        (item) => item && item.$ && item.$['android:name'] === perm
+      );
+      if (!exists) {
+        manifest['uses-permission'].push({ $: { 'android:name': perm } });
+      }
     });
     return config;
   });
