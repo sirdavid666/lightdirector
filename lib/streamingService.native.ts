@@ -75,11 +75,3 @@ export async function showImageMedia(filePath: string): Promise<void> {
 export async function clearImageMedia(): Promise<void> {
   await nativeCompositor.clearImageMedia();
 }
-
-export async function startFileVideoStream(filePath: string, url: string): Promise<void> {
-  await nativeCompositor.startFileVideoStream(filePath, url);
-}
-
-export async function stopFileStream(): Promise<void> {
-  await nativeCompositor.stopFileStream();
-}
