@@ -55,18 +55,20 @@ function withJitPackRepo(config) {
   return withSettingsGradle(config, (config) => {
     let content = config.modResults.contents;
     
-    // Ensure dependencyResolutionManagement block exists with PREFER_SETTINGS and JitPack
+    // Ensure dependencyResolutionManagement block exists with PREFER_PROJECT and JitPack
     const hasDependencyResolution = content.includes('dependencyResolutionManagement');
     
     if (!hasDependencyResolution) {
       // Add the entire block at the end
-      content += `\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)\n    repositories {\n        google()\n        mavenCentral()\n        ${JITPACK_REPO}\n    }\n}\n`;
+      content += `\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)\n    repositories {\n        google()\n        mavenCentral()\n        ${JITPACK_REPO}\n    }\n}\n`;
     } else {
-      // Block exists — ensure PREFER_SETTINGS is set and JitPack is in repositories
-      if (!content.includes('PREFER_SETTINGS')) {
+      // Block exists — ensure PREFER_PROJECT is set and JitPack is in repositories
+      if (!content.includes('PREFER_PROJECT')) {
+        // Remove PREFER_SETTINGS if present, add PREFER_PROJECT
+        content = content.replace(/repositoriesMode\.set\(RepositoriesMode\.PREFER_SETTINGS\)/g, '');
         content = content.replace(
           /dependencyResolutionManagement\s*{/,
-          'dependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)'
+          'dependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)'
         );
       }
       if (!content.includes(JITPACK_REPO)) {
