@@ -52,6 +52,7 @@ function withCopyNativeJavaFiles(config) {
 }
 
 function withJitPackRepo(config) {
+  // 1. settings.gradle (dependencyResolutionManagement)
   config = withSettingsGradle(config, (config) => {
     const content = config.modResults.contents;
     if (!content.includes(JITPACK_REPO)) {
@@ -60,29 +61,30 @@ function withJitPackRepo(config) {
       if (match) {
         const before = content.slice(0, match.index + match[0].length - 1);
         const after = content.slice(match.index + match[0].length - 1);
-        config.modResults.contents = `${before}\n    ${JITPACK_REPO}\n${after}`;
+        config.modResults.contents = `${before}\n        ${JITPACK_REPO}\n${after}`;
       }
     }
     return config;
   });
-  config = withDangerousMod(config, [
-    'android',
-    (config) => {
-      const filePath = path.join(config.modRequest.projectRoot, 'android', 'build.gradle');
-      if (!fs.existsSync(filePath)) return config;
-      let contents = fs.readFileSync(filePath, 'utf8');
-      if (!contents.includes(JITPACK_REPO)) {
-        const allprojectsRepos = /allprojects\s*{[^}]*repositories\s*{([^}]*)}/s;
-        const match = contents.match(allprojectsRepos);
-        if (match) {
-          const insertPos = match.index + match[0].length - 1;
-          contents = contents.slice(0, insertPos) + `\n    ${JITPACK_REPO}` + contents.slice(insertPos);
-          fs.writeFileSync(filePath, contents);
-        }
+
+  // 2. android/app/build.gradle (repositories block inside the app module)
+  config = withAppBuildGradle(config, (config) => {
+    let contents = config.modResults.contents;
+    if (!contents.includes(JITPACK_REPO)) {
+      // Try to inject into an existing repositories { } block
+      const reposMatch = contents.match(/repositories\s*{([^}]*)}/s);
+      if (reposMatch) {
+        const insertPos = reposMatch.index + reposMatch[0].length - 1;
+        contents = contents.slice(0, insertPos) + `\n        ${JITPACK_REPO}` + contents.slice(insertPos);
+      } else {
+        // No repositories block exists — create one at the top level
+        contents = `repositories {\n    ${JITPACK_REPO}\n}\n` + contents;
       }
-      return config;
-    },
-  ]);
+      config.modResults.contents = contents;
+    }
+    return config;
+  });
+
   return config;
 }
 
