@@ -41,6 +41,16 @@
         {
           "cameraPermission": "Allow LightDirector to access your camera for live streaming."
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraMavenRepos": [
+              "https://jitpack.io"
+            ]
+          }
+        }
       ]
     ],
     "extra": {
