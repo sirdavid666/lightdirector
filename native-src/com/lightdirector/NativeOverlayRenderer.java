@@ -22,6 +22,7 @@ public class NativeOverlayRenderer {
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
   private JSONObject state;
   private Bitmap mediaBitmap = null;
+  private Bitmap recyclePending = null;
   private int width = 1280;
   private int height = 720;
 
@@ -44,22 +45,38 @@ public class NativeOverlayRenderer {
   }
 
   public void showMediaBitmap(Bitmap bitmap) {
-    this.mediaBitmap = bitmap;
+    synchronized (this) {
+      recyclePending = mediaBitmap;
+      mediaBitmap = bitmap;
+    }
     render();
   }
 
   public void clearMediaBitmap() {
-    this.mediaBitmap = null;
+    synchronized (this) {
+      recyclePending = mediaBitmap;
+      mediaBitmap = null;
+    }
     render();
   }
 
   private void render() {
     mainHandler.post(() -> {
+      Bitmap media;
+      Bitmap old;
+      synchronized (this) {
+        media = mediaBitmap;
+        old = recyclePending;
+        recyclePending = null;
+      }
       Bitmap bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
       Canvas canvas = new Canvas(bmp);
-      if (mediaBitmap != null) {
+      if (media != null && !media.isRecycled()) {
         RectF dst = new RectF(0, 0, width, height);
-        canvas.drawBitmap(mediaBitmap, null, dst, null);
+        canvas.drawBitmap(media, null, dst, null);
+      }
+      if (old != null && old != media && !old.isRecycled()) {
+        old.recycle();
       }
       drawOverlay(canvas, state);
       filter.updateBitmap(bmp);
