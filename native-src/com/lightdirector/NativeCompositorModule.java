@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Handler;
+import android.os.Looper;
 import androidx.annotation.NonNull;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.LifecycleEventListener;
@@ -21,11 +23,22 @@ import com.pedro.rtplibrary.view.GlInterface;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.Scanner;
+
 public class NativeCompositorModule extends ReactContextBaseJavaModule implements LifecycleEventListener, ConnectCheckerRtmp {
   public static final String NAME = "NativeCompositor";
   public static String currentGrade = "Natural";
   public static double micGain = 1.0;
   public static double mediaGain = 1.0;
+
+  private static final String CRASH_LOG_FILE = "lightdirector_crash.log";
+  private static final int MAX_START_RETRIES = 4;
+  private static final int RETRY_DELAY_MS = 500;
+  private static boolean crashHandlerInstalled = false;
 
   private final ReactApplicationContext reactContext;
   private RtmpCamera2 rtmpCamera2;
@@ -37,10 +50,51 @@ public class NativeCompositorModule extends ReactContextBaseJavaModule implement
     super(reactContext);
     this.reactContext = reactContext;
     reactContext.addLifecycleEventListener(this);
+    installCrashHandler();
   }
 
   @NonNull @Override public String getName() { return NAME; }
 
+  // ---------------------------------------------------------------------
+  // Crash handling: catches uncaught exceptions (e.g. from async camera
+  // callbacks that fire after our try/catch has already returned), writes
+  // them to a file, and lets the JS side read + display them on next launch.
+  // ---------------------------------------------------------------------
+  private void installCrashHandler() {
+    if (crashHandlerInstalled) return;
+    crashHandlerInstalled = true;
+    final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+    Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+      try {
+        StringWriter sw = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(sw));
+        File f = new File(reactContext.getFilesDir(), CRASH_LOG_FILE);
+        FileWriter fw = new FileWriter(f, false);
+        fw.write("Thread: " + thread.getName() + "\n" + sw.toString());
+        fw.close();
+      } catch (Throwable ignored) {}
+      if (defaultHandler != null) defaultHandler.uncaughtException(thread, throwable);
+    });
+  }
+
+  @ReactMethod
+  public void getCrashLog(Promise promise) {
+    try {
+      File f = new File(reactContext.getFilesDir(), CRASH_LOG_FILE);
+      if (!f.exists()) { promise.resolve(null); return; }
+      Scanner s = new Scanner(f).useDelimiter("\\A");
+      String content = s.hasNext() ? s.next() : "";
+      s.close();
+      f.delete(); // clear after reading so it doesn't reappear next launch
+      promise.resolve(content);
+    } catch (Exception e) {
+      promise.resolve(null);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Go Live / streaming
+  // ---------------------------------------------------------------------
   @ReactMethod
   public void startStream(String url, Promise promise) {
     startStreamWithConfig(url, 1280, 720, 30, 2500, promise);
@@ -50,11 +104,21 @@ public class NativeCompositorModule extends ReactContextBaseJavaModule implement
   public void startStreamWithConfig(String url, double w, double h, double fps, double kbps, Promise promise) {
     Activity activity = getCurrentActivity();
     if (activity == null) { promise.reject("E_ACTIVITY", "Activity is null"); return; }
+    attemptStart(activity, url, (int) w, (int) h, (int) fps, (int) (kbps * 1024), promise, 0);
+  }
+
+  // Retries the camera-open + stream-start sequence a few times with a short
+  // delay in between. The physical camera released by expo-camera's
+  // CameraView on the JS side may not be fully free yet when this first
+  // runs, so we give it a few chances rather than failing (or worse,
+  // crashing via an async callback) on the first attempt.
+  private void attemptStart(final Activity activity, final String url, final int w, final int h,
+                             final int fps, final int kbps, final Promise promise, final int retryCount) {
     try {
       if (rtmpCamera2 == null) {
         rtmpCamera2 = new RtmpCamera2((Context) activity, true, this);
       }
-      if (!rtmpCamera2.prepareVideo((int) w, (int) h, (int) fps, (int) (kbps * 1024), 0)) {
+      if (!rtmpCamera2.prepareVideo(w, h, fps, kbps, 0)) {
         promise.reject("E_PREPARE_VIDEO", "Video preparation failed"); return;
       }
       if (!rtmpCamera2.prepareAudio(128 * 1024, 44100, true)) {
@@ -68,7 +132,14 @@ public class NativeCompositorModule extends ReactContextBaseJavaModule implement
       rtmpCamera2.startStream(url);
       promise.resolve(null);
     } catch (Exception e) {
-      promise.reject("E_START_STREAM", e.getMessage());
+      if (retryCount < MAX_START_RETRIES) {
+        new Handler(Looper.getMainLooper()).postDelayed(
+          () -> attemptStart(activity, url, w, h, fps, kbps, promise, retryCount + 1),
+          RETRY_DELAY_MS
+        );
+      } else {
+        promise.reject("E_START_STREAM", e.getMessage());
+      }
     }
   }
 
