@@ -5,6 +5,7 @@ const {
   withAppBuildGradle,
   withAndroidManifest,
   withMainApplication,
+  withProjectBuildGradle,
 } = require('@expo/config-plugins');
 
 const JAVA_FILES = [
@@ -17,9 +18,7 @@ const JAVA_FILES = [
   'NativeCompositorPackage.java',
 ];
 
-const RTMP_DEP = `implementation('com.github.pedroSG94.rtmp-rtsp-stream-client-java:rtplibrary:2.2.2') {
-    exclude group: 'com.facebook.fresco', module: 'animated-gif'
-}`;
+const RTMP_DEP = "implementation 'com.github.pedroSG94.rtmp-rtsp-stream-client-java:rtplibrary:2.2.2'";
 const PERMISSIONS = [
   'android.permission.INTERNET',
   'android.permission.CAMERA',
@@ -54,13 +53,27 @@ function withCopyNativeJavaFiles(config) {
 function withRtmpDependency(config) {
   return withAppBuildGradle(config, (config) => {
     const { contents } = config.modResults;
-    if (!contents.includes(RTMP_DEP)) {
+    if (!contents.includes('rtplibrary:2.2.2')) {
       const depsBlock = /dependencies\s*{([^}]*)}/s;
       const match = contents.match(depsBlock);
       if (match) {
         const insertPos = match.index + match[0].length - 1;
         config.modResults.contents = contents.slice(0, insertPos) + `\n    ${RTMP_DEP}` + contents.slice(insertPos);
       }
+    }
+    return config;
+  });
+}
+
+function withGlobalFrescoExclude(config) {
+  return withProjectBuildGradle(config, (config) => {
+    const { contents } = config.modResults;
+    const marker = 'allprojects {';
+    if (contents.includes(marker) && !contents.includes('animated-gif')) {
+      config.modResults.contents = contents.replace(
+        marker,
+        `${marker}\n    configurations.all {\n        exclude group: 'com.facebook.fresco', module: 'animated-gif'\n    }`
+      );
     }
     return config;
   });
@@ -113,8 +126,10 @@ function withPackageRegistration(config) {
 module.exports = (config) => {
   return withCopyNativeJavaFiles(
     withRtmpDependency(
-      withPermissions(
-        withPackageRegistration(config)
+      withGlobalFrescoExclude(
+        withPermissions(
+          withPackageRegistration(config)
+        )
       )
     )
   );
