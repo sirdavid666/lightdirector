@@ -2,35 +2,26 @@ import { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Alert, Switch, Animated, requireNativeComponent } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  type Layout, type LiveItem, type GradeSettings, type RoomCommand,
-  defaultGrade, layoutForItem,
-} from '@/lib/lightcast';
+import { type Layout, type LiveItem, type RoomCommand, layoutForItem } from '@/lib/lightcast';
 import { connectRoom, type RoomConnection } from '@/lib/roomSync';
-import {
-  connectFacebook, getFacebookToken, disconnectFacebook,
-  listFacebookDestinations, createFacebookLiveVideo, endFacebookLiveVideo,
-  type FacebookDestination,
-} from '@/lib/facebookLive';
-import { startPublishing, stopPublishing, setOverlayState } from '@/lib/streamingService';
-import * as Linking from 'expo-linking';
+import { startPublishing, stopPublishing, setOverlayState, setGrade, setAudioBalance, showImageMedia, clearImageMedia } from '@/lib/streamingService';
 
 const NativeCompositorView = requireNativeComponent<any>('NativeCompositorView');
 
 const LAYOUTS: Layout[] = ['Worship', 'Sermon', 'Scripture Full', 'Lyrics Full', 'Camera Only', 'Blank'];
 const SCENES = ['Camera', 'Bible', 'Lyrics', 'Lower Third', 'Ticker', 'Countdown', 'Blank'] as const;
 const CATEGORIES = ['Praise', 'Worship', 'Scripture', 'Sermon', 'Offering', 'Announce', 'Prayer', 'Special', 'Closing'];
-const GRADE_PRESETS: GradeSettings['preset'][] = ['Natural', 'Warm Church', 'Cool', 'Cinematic', 'Vivid', 'Flat/Log lift'];
+const GRADE_PRESETS = ['Natural', 'WarmChurch', 'Cool', 'Cinematic', 'Vivid', 'FlatLogLift', 'Beauty', 'Vignette', 'Noir', 'Retro'];
 
-const RES_MAP: Record<string, { width: number; height: number; videoBitrate: number }> = {
-  '720p30': { width: 1280, height: 720, videoBitrate: 2500 },
-  '1080p30': { width: 1920, height: 1080, videoBitrate: 4500 },
-  '1080p60': { width: 1920, height: 1080, videoBitrate: 6000 },
+const RES_MAP: Record<string, { width: number; height: number; fps: number; videoBitrate: number }> = {
+  '720p30': { width: 1280, height: 720, fps: 30, videoBitrate: 2500 },
+  '1080p30': { width: 1920, height: 1080, fps: 30, videoBitrate: 4500 },
+  '1080p60': { width: 1920, height: 1080, fps: 60, videoBitrate: 6000 },
 };
 
 type Tab = 'Scenes' | 'Library' | 'Rundown' | 'Settings';
 type RundownItem = { id: string; text: string; category: string };
-type PendingRequest = { secureStreamUrl: string; width: number; height: number; videoBitrate: number };
+type PendingRequest = { secureStreamUrl: string; width: number; height: number; fps: number; videoBitrate: number };
 
 async function fetchBibleVerse(reference: string, version: 'KJV' | 'YOR'): Promise<{ reference: string; text: string; found: boolean }> {
   const translation = version === 'YOR' ? 'yoruba' : 'kjv';
@@ -50,26 +41,17 @@ async function fetchBibleVerse(reference: string, version: 'KJV' | 'YOR'): Promi
 export default function DirectorConsole() {
   const [permission, requestPermission] = useCameraPermissions();
   const [tab, setTab] = useState<Tab>('Scenes');
-
   const [programLayout, setProgramLayout] = useState<Layout>('Camera Only');
   const [previewLayout, setPreviewLayout] = useState<Layout>('Worship');
   const [liveItem, setLiveItem] = useState<LiveItem>(null);
   const previousLayout = useRef<Layout>('Camera Only');
-
   const [isLive, setIsLive] = useState(false);
   const [streamMode, setStreamMode] = useState(false);
   const [pendingReq, setPendingReq] = useState<PendingRequest | null>(null);
   const startCalled = useRef(false);
-
-  const [fbDestinations, setFbDestinations] = useState<FacebookDestination[]>([]);
-  const [selectedDest, setSelectedDest] = useState<FacebookDestination | null>(null);
-
   const [roomCode, setRoomCode] = useState('LIGHT-247');
   const [roomStatus, setRoomStatus] = useState('Not connected');
   const room = useRef<RoomConnection | null>(null);
-
-  const [grade, setGrade] = useState<GradeSettings>(defaultGrade);
-
   const [savedVerses, setSavedVerses] = useState<any[]>([]);
   const [songs, setSongs] = useState<{ title: string; lines: string[] }[]>([]);
   const [announcements, setAnnouncements] = useState<string[]>([]);
@@ -77,31 +59,29 @@ export default function DirectorConsole() {
   const [verseText, setVerseText] = useState('');
   const [verseVersion, setVerseVersion] = useState<'KJV' | 'YOR'>('KJV');
   const [fetching, setFetching] = useState(false);
-
   const [songTitle, setSongTitle] = useState('');
   const [songLines, setSongLines] = useState('');
   const [editingSong, setEditingSong] = useState<number | null>(null);
   const [annText, setAnnText] = useState('');
   const [editingAnn, setEditingAnn] = useState<number | null>(null);
-
   const [lowerName, setLowerName] = useState('Pastor David');
   const [lowerRole, setLowerRole] = useState('Senior Pastor');
   const [tickerText, setTickerText] = useState('Welcome to service — God bless you! GOFF 3.0 is starting soon.');
   const [countMins, setCountMins] = useState('5');
-
   const [rundown, setRundown] = useState<RundownItem[]>([]);
   const [activeRundown, setActiveRundown] = useState<string | null>(null);
   const [rdText, setRdText] = useState('');
   const [rdCat, setRdCat] = useState(CATEGORIES[0]);
-
   const [pipOn, setPipOn] = useState(true);
   const [resolution, setResolution] = useState('1080p30');
-  const [bitrate, setBitrate] = useState('4.5');
   const [lyricsColor, setLyricsColor] = useState('#22c55e');
   const [rtmpUrl, setRtmpUrl] = useState('');
   const [rtmpKey, setRtmpKey] = useState('');
-
   const [countSecs, setCountSecs] = useState(0);
+  const [currentGradePreset, setCurrentGradePreset] = useState('Natural');
+  const [micGain, setMicGain] = useState(1.0);
+  const [mediaGain, setMediaGain] = useState(1.0);
+  const [mediaPath, setMediaPath] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -128,7 +108,6 @@ export default function DirectorConsole() {
     return () => conn.disconnect();
   }, [roomCode]);
 
-  // Countdown ticker for the native overlay
   useEffect(() => {
     if (liveItem?.type === 'countdown') {
       setCountSecs(liveItem.minutes * 60);
@@ -137,7 +116,6 @@ export default function DirectorConsole() {
     }
   }, [liveItem]);
 
-  // Sync overlay state into the native compositor
   useEffect(() => {
     const nativeLayout = (programLayout || '').replace(/\s+/g, '');
     const state = {
@@ -151,7 +129,6 @@ export default function DirectorConsole() {
     setOverlayState(state as any).catch(() => {});
   }, [liveItem, programLayout, countSecs]);
 
-  // Start the native publisher only AFTER expo-camera views have unmounted
   useEffect(() => {
     if (!streamMode || !pendingReq || startCalled.current) return;
     startCalled.current = true;
@@ -159,36 +136,19 @@ export default function DirectorConsole() {
     const t = setTimeout(() => {
       startPublishing(req, {
         onConnected: () => setIsLive(true),
-        onDisconnected: () => {
-          setIsLive(false);
-          setStreamMode(false);
-          startCalled.current = false;
-        },
-        onError: (error) => {
-          Alert.alert('Stream Error', error);
-          setIsLive(false);
-          setStreamMode(false);
-          startCalled.current = false;
-        },
-      }).catch((e: any) => {
-        Alert.alert('Go Live failed', e?.message ?? String(e));
-        setIsLive(false);
-        setStreamMode(false);
-        startCalled.current = false;
-      });
+        onDisconnected: () => { setIsLive(false); setStreamMode(false); startCalled.current = false; },
+        onError: (error) => { Alert.alert('Stream Error', error); setIsLive(false); setStreamMode(false); startCalled.current = false; },
+      }).catch((e: any) => { Alert.alert('Go Live failed', e?.message ?? String(e)); setIsLive(false); setStreamMode(false); startCalled.current = false; });
     }, 500);
     return () => clearTimeout(t);
   }, [streamMode, pendingReq]);
 
   function handleRoomCommand(cmd: RoomCommand) {
-    if (cmd.type === 'layout') { setProgramLayout(cmd.layout); }
+    if (cmd.type === 'layout') setProgramLayout(cmd.layout);
     else if (cmd.type === 'take') { previousLayout.current = cmd.previousLayout; setProgramLayout(cmd.layout); }
     else if (cmd.type === 'push') { previousLayout.current = cmd.previousLayout; setLiveItem(cmd.item); setProgramLayout(cmd.layout); }
     else if (cmd.type === 'clear') { setLiveItem(null); setProgramLayout(cmd.layout); }
-    else if (cmd.type === 'grade') { setGrade(cmd.grade); }
-    else if (cmd.type === 'prompter' && liveItem?.type === 'hymn') {
-      setLiveItem({ ...liveItem, lineIndex: cmd.lineIndex });
-    }
+    else if (cmd.type === 'prompter' && liveItem?.type === 'hymn') setLiveItem({ ...liveItem, lineIndex: cmd.lineIndex });
   }
 
   function pushItem(item: Exclude<LiveItem, null>) {
@@ -198,53 +158,19 @@ export default function DirectorConsole() {
     setProgramLayout(target);
     room.current?.publish({ type: 'push', item, layout: target, previousLayout: programLayout });
   }
-  function clearItem() {
-    const back = previousLayout.current;
-    setLiveItem(null);
-    setProgramLayout(back);
-    room.current?.publish({ type: 'clear', layout: back });
-  }
-  function takePreview() {
-    previousLayout.current = programLayout;
-    setProgramLayout(previewLayout);
-    room.current?.publish({ type: 'take', layout: previewLayout, previousLayout: programLayout });
-  }
-  function setLayout(l: Layout) {
-    setPreviewLayout(l);
-    room.current?.publish({ type: 'layout', layout: l });
-  }
-
-  function prompterNext() {
-    if (liveItem?.type !== 'hymn') return;
-    const nextIdx = Math.min((liveItem.lineIndex || 0) + 1, liveItem.lines.length - 1);
-    setLiveItem({ ...liveItem, lineIndex: nextIdx });
-    room.current?.publish({ type: 'prompter', lineIndex: nextIdx });
-  }
-  function prompterPrev() {
-    if (liveItem?.type !== 'hymn') return;
-    const prevIdx = Math.max((liveItem.lineIndex || 0) - 1, 0);
-    setLiveItem({ ...liveItem, lineIndex: prevIdx });
-    room.current?.publish({ type: 'prompter', lineIndex: prevIdx });
-  }
-
-  async function handleConnectFacebook() {
-    try {
-      const redirect = Linking.createURL('facebook-auth');
-      const token = await connectFacebook(redirect);
-      setFbDestinations(await listFacebookDestinations(token));
-    } catch (e: any) { Alert.alert('Facebook', e.message); }
-  }
+  function clearItem() { const back = previousLayout.current; setLiveItem(null); setProgramLayout(back); room.current?.publish({ type: 'clear', layout: back }); }
+  function takePreview() { previousLayout.current = programLayout; setProgramLayout(previewLayout); room.current?.publish({ type: 'take', layout: previewLayout, previousLayout: programLayout }); }
+  function setLayout(l: Layout) { setPreviewLayout(l); room.current?.publish({ type: 'layout', layout: l }); }
+  function prompterNext() { if (liveItem?.type !== 'hymn') return; const nextIdx = Math.min((liveItem.lineIndex || 0) + 1, liveItem.lines.length - 1); setLiveItem({ ...liveItem, lineIndex: nextIdx }); room.current?.publish({ type: 'prompter', lineIndex: nextIdx }); }
+  function prompterPrev() { if (liveItem?.type !== 'hymn') return; const prevIdx = Math.max((liveItem.lineIndex || 0) - 1, 0); setLiveItem({ ...liveItem, lineIndex: prevIdx }); room.current?.publish({ type: 'prompter', lineIndex: prevIdx }); }
 
   async function handleGoLive() {
     const res = RES_MAP[resolution] || RES_MAP['1080p30'];
     let url = rtmpUrl.trim().replace(/\/$/, '');
     const key = rtmpKey.trim();
     if (key && !url.includes(key)) url = `${url}/${key}`;
-    if (!url) {
-      Alert.alert('No stream URL', 'Paste your RTMP URL and stream key in Settings first (YouTube, Twitch, Castr, Restream, or Facebook Live Producer).');
-      return;
-    }
-    setPendingReq({ secureStreamUrl: url, width: res.width, height: res.height, videoBitrate: res.videoBitrate });
+    if (!url) { Alert.alert('No stream URL', 'Paste your RTMP URL in Settings first.'); return; }
+    setPendingReq({ secureStreamUrl: url, width: res.width, height: res.height, fps: res.fps, videoBitrate: res.videoBitrate });
     setStreamMode(true);
   }
 
@@ -254,6 +180,19 @@ export default function DirectorConsole() {
     setPendingReq(null);
     setStreamMode(false);
     setIsLive(false);
+  }
+
+  async function handleGradeChange(preset: string) {
+    setCurrentGradePreset(preset);
+    await setGrade(preset);
+  }
+
+  async function handleAudioChange(type: 'mic' | 'media', delta: number) {
+    const newMic = type === 'mic' ? Math.max(0, Math.min(2, micGain + delta)) : micGain;
+    const newMedia = type === 'media' ? Math.max(0, Math.min(2, mediaGain + delta)) : mediaGain;
+    setMicGain(newMic);
+    setMediaGain(newMedia);
+    await setAudioBalance(newMic, newMedia);
   }
 
   async function saveVerse() {
@@ -281,9 +220,7 @@ export default function DirectorConsole() {
   async function saveSong() {
     if (!songTitle.trim() || !songLines.trim()) return;
     const lines = songLines.split('\n').map((l) => l.trim()).filter(Boolean);
-    const next = editingSong !== null
-      ? songs.map((s, i) => (i === editingSong ? { title: songTitle.trim(), lines } : s))
-      : [...songs, { title: songTitle.trim(), lines }];
+    const next = editingSong !== null ? songs.map((s, i) => (i === editingSong ? { title: songTitle.trim(), lines } : s)) : [...songs, { title: songTitle.trim(), lines }];
     setSongs(next);
     await AsyncStorage.setItem('songs', JSON.stringify(next));
     setSongTitle(''); setSongLines(''); setEditingSong(null);
@@ -298,9 +235,7 @@ export default function DirectorConsole() {
 
   async function saveAnn() {
     if (!annText.trim()) return;
-    const next = editingAnn !== null
-      ? announcements.map((a, i) => (i === editingAnn ? annText.trim() : a))
-      : [...announcements, annText.trim()];
+    const next = editingAnn !== null ? announcements.map((a, i) => (i === editingAnn ? annText.trim() : a)) : [...announcements, annText.trim()];
     setAnnouncements(next);
     await AsyncStorage.setItem('announcements', JSON.stringify(next));
     setAnnText(''); setEditingAnn(null);
@@ -331,15 +266,10 @@ export default function DirectorConsole() {
   }
   function activateRundown(item: RundownItem) {
     setActiveRundown(item.id);
-    if (item.category === 'Scripture' || item.category === 'Sermon') {
-      pushItem({ type: 'scripture', title: item.text, reference: item.text, version: 'KJV', text: item.text });
-    } else if (item.category === 'Praise' || item.category === 'Worship') {
-      pushItem({ type: 'hymn', title: item.text, lines: [item.text] });
-    } else if (item.category === 'Announce') {
-      pushItem({ type: 'announce', title: 'Announcement', text: item.text });
-    } else {
-      setLayout('Camera Only');
-    }
+    if (item.category === 'Scripture' || item.category === 'Sermon') pushItem({ type: 'scripture', title: item.text, reference: item.text, version: 'KJV', text: item.text });
+    else if (item.category === 'Praise' || item.category === 'Worship') pushItem({ type: 'hymn', title: item.text, lines: [item.text] });
+    else if (item.category === 'Announce') pushItem({ type: 'announce', title: 'Announcement', text: item.text });
+    else setLayout('Camera Only');
   }
   function nextRundown() {
     const idx = rundown.findIndex((r) => r.id === activeRundown);
@@ -348,37 +278,25 @@ export default function DirectorConsole() {
     else clearItem();
   }
 
-  const canGoLive = rtmpUrl.trim().length > 0 || !!selectedDest;
+  const canGoLive = rtmpUrl.trim().length > 0;
 
   return (
     <View style={s.root}>
       <View style={s.header}>
-        <View>
-          <Text style={s.title}>Light<Text style={s.accent}>Cast</Text></Text>
-          <Text style={s.subtitle}>DIRECTOR CONSOLE</Text>
-        </View>
+        <View><Text style={s.title}>Light<Text style={s.accent}>Cast</Text></Text><Text style={s.subtitle}>DIRECTOR CONSOLE</Text></View>
         <View style={s.headerRight}>
-          <View style={[s.pill, isLive && s.pillLive]}>
-            <View style={[s.dot, isLive && s.dotLive]} />
-            <Text style={s.pillText}>{isLive ? 'ON AIR' : 'STANDBY'}</Text>
-          </View>
+          <View style={[s.pill, isLive && s.pillLive]}><View style={[s.dot, isLive && s.dotLive]} /><Text style={s.pillText}>{isLive ? 'ON AIR' : 'STANDBY'}</Text></View>
         </View>
       </View>
-
       <View style={s.statusRow}>
-        <View style={s.liveChip}>
-          <Text style={s.liveChipText}>{liveItem ? `LIVE: ${liveItem.type === 'scripture' ? liveItem.reference : liveItem.type === 'lower' ? liveItem.name : liveItem.type === 'countdown' ? 'Countdown' : liveItem.title ?? liveItem.type}` : 'No live item'}</Text>
-          {liveItem ? <TouchableOpacity onPress={clearItem}><Text style={s.clearText}> ✕ Clear</Text></TouchableOpacity> : null}
-        </View>
+        <View style={s.liveChip}><Text style={s.liveChipText}>{liveItem ? `LIVE: ${liveItem.type === 'scripture' ? liveItem.reference : liveItem.type === 'lower' ? liveItem.name : liveItem.type === 'countdown' ? 'Countdown' : liveItem.title ?? liveItem.type}` : 'No live item'}</Text>{liveItem ? <TouchableOpacity onPress={clearItem}><Text style={s.clearText}> ✕ Clear</Text></TouchableOpacity> : null}</View>
         <Text style={s.roomText}>PAIR: {roomCode} · {roomStatus}</Text>
       </View>
-
       <ScrollView contentContainerStyle={s.scroll}>
         <View style={s.monitors}>
-          <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} hideCam={streamMode} />
-          <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} grade={grade} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} nativeCam={streamMode} />
+          <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} pipOn={pipOn} lyricsColor={lyricsColor} hideCam={streamMode} />
+          <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} nativeCam={streamMode} />
         </View>
-
         {liveItem?.type === 'hymn' && (
           <View style={s.prompterRow}>
             <TouchableOpacity style={s.prompterBtn} onPress={prompterPrev}><Text style={s.prompterBtnText}>▲ Prev</Text></TouchableOpacity>
@@ -386,12 +304,8 @@ export default function DirectorConsole() {
             <TouchableOpacity style={s.prompterBtn} onPress={prompterNext}><Text style={s.prompterBtnText}>Next ▼</Text></TouchableOpacity>
           </View>
         )}
-
         <View style={s.takeRow}>
-          <View>
-            <Text style={s.takeLabel}>READY TO TAKE</Text>
-            <Text style={s.takeSub}>{previewLayout} → Program</Text>
-          </View>
+          <View><Text style={s.takeLabel}>READY TO TAKE</Text><Text style={s.takeSub}>{previewLayout} → Program</Text></View>
           <View style={s.takeBtns}>
             <TouchableOpacity style={s.takeBtn} onPress={takePreview}><Text style={s.takeBtnText}>TAKE →</Text></TouchableOpacity>
             {!isLive ? (
@@ -403,7 +317,6 @@ export default function DirectorConsole() {
             )}
           </View>
         </View>
-
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.chips}>
           {LAYOUTS.map((l) => (
             <TouchableOpacity key={l} style={[s.chip, previewLayout === l && s.chipActive]} onPress={() => setLayout(l)}>
@@ -411,17 +324,6 @@ export default function DirectorConsole() {
             </TouchableOpacity>
           ))}
         </ScrollView>
-
-        {fbDestinations.length > 0 && (
-          <View style={s.panel}>
-            <Text style={s.panelTitle}>STREAM DESTINATION</Text>
-            {fbDestinations.map((d) => (
-              <TouchableOpacity key={d.id} style={[s.row, selectedDest?.id === d.id && s.rowActive]} onPress={() => setSelectedDest(d)}>
-                <Text style={s.rowText}>{d.name} ({d.kind})</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
 
         {tab === 'Scenes' && (
           <View style={s.panel}>
@@ -431,20 +333,13 @@ export default function DirectorConsole() {
                 <TouchableOpacity key={sc} style={s.sceneCard} onPress={() => {
                   if (sc === 'Camera') setLayout('Camera Only');
                   else if (sc === 'Blank') setLayout('Blank');
-                  else if (sc === 'Lyrics') {
-                    if (songs[0]) pushItem({ type: 'hymn', title: songs[0].title, lines: songs[0].lines });
-                    else Alert.alert('No songs yet', 'Add a song in the Library tab first.');
-                  }
-                  else if (sc === 'Bible') {
-                    if (savedVerses[0]) pushItem({ type: 'scripture', title: savedVerses[0].reference, reference: savedVerses[0].reference, version: savedVerses[0].version, text: savedVerses[0].text });
-                    else Alert.alert('No verses yet', 'Save or fetch a verse in the Library tab first.');
-                  }
+                  else if (sc === 'Lyrics') { if (songs[0]) pushItem({ type: 'hymn', title: songs[0].title, lines: songs[0].lines }); else Alert.alert('No songs', 'Add in Library.'); }
+                  else if (sc === 'Bible') { if (savedVerses[0]) pushItem({ type: 'scripture', title: savedVerses[0].reference, reference: savedVerses[0].reference, version: savedVerses[0].version, text: savedVerses[0].text }); else Alert.alert('No verses', 'Save in Library.'); }
                   else if (sc === 'Lower Third') pushItem({ type: 'lower', name: lowerName, role: lowerRole });
                   else if (sc === 'Ticker') pushItem({ type: 'ticker', text: tickerText });
                   else if (sc === 'Countdown') pushItem({ type: 'countdown', minutes: Math.max(1, parseInt(countMins || '5', 10)) });
                 }}>
-                  <Text style={s.sceneName}>{sc}</Text>
-                  <Text style={s.sceneSub}>Push</Text>
+                  <Text style={s.sceneName}>{sc}</Text><Text style={s.sceneSub}>Push</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -454,17 +349,14 @@ export default function DirectorConsole() {
         {tab === 'Library' && (
           <View style={s.panel}>
             <Text style={s.panelTitle}>LIBRARY</Text>
-
             <Text style={s.sub}>Bible Verses (KJV + Yoruba)</Text>
-            <TextInput style={s.input} placeholder="Reference (John 3:16)" placeholderTextColor="#666" value={verseRef} onChangeText={setVerseRef} autoCapitalize="none" />
+            <TextInput style={s.input} placeholder="Reference (John 3:16)" value={verseRef} onChangeText={setVerseRef} />
             <View style={s.verRow}>
               <TouchableOpacity style={[s.chip, verseVersion === 'KJV' && s.chipActive]} onPress={() => setVerseVersion('KJV')}><Text style={s.chipText}>KJV</Text></TouchableOpacity>
               <TouchableOpacity style={[s.chip, verseVersion === 'YOR' && s.chipActive]} onPress={() => setVerseVersion('YOR')}><Text style={s.chipText}>YORUBA</Text></TouchableOpacity>
-              <TouchableOpacity style={[s.saveBtn, fetching && s.disabled]} onPress={fetchVerse} disabled={fetching}>
-                <Text style={s.saveBtnText}>{fetching ? 'Fetching…' : '🔍 Fetch Verse'}</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={[s.saveBtn, fetching && s.disabled]} onPress={fetchVerse} disabled={fetching}><Text style={s.saveBtnText}>{fetching ? 'Fetching…' : '🔍 Fetch Verse'}</Text></TouchableOpacity>
             </View>
-            <TextInput style={s.input} placeholder="Verse text (auto-filled by Fetch)" placeholderTextColor="#666" value={verseText} onChangeText={setVerseText} multiline />
+            <TextInput style={s.input} placeholder="Verse text" value={verseText} onChangeText={setVerseText} multiline />
             <TouchableOpacity style={s.saveBtn} onPress={saveVerse}><Text style={s.saveBtnText}>+ Save Verse</Text></TouchableOpacity>
             {savedVerses.map((v, i) => (
               <View key={i} style={s.rowFlex}>
@@ -474,39 +366,25 @@ export default function DirectorConsole() {
                 <TouchableOpacity style={s.delBtn} onPress={() => deleteVerse(i)}><Text style={s.miniBtnText}>Del</Text></TouchableOpacity>
               </View>
             ))}
-
             <Text style={s.sub}>Songs / Hymns (Teleprompter) {editingSong !== null ? '(editing)' : ''}</Text>
-            <TextInput style={s.input} placeholder="Song title" placeholderTextColor="#666" value={songTitle} onChangeText={setSongTitle} />
-            <TextInput style={s.input} placeholder="Lyrics — one line per row" placeholderTextColor="#666" value={songLines} onChangeText={setSongLines} multiline />
-            <TouchableOpacity style={s.saveBtn} onPress={saveSong}><Text style={s.saveBtnText}>{editingSong !== null ? '✔ Update Song' : '+ Save Song'}</Text></TouchableOpacity>
+            <TextInput style={s.input} placeholder="Song title" value={songTitle} onChangeText={setSongTitle} />
+            <TextInput style={s.input} placeholder="Lyrics (one line per row)" value={songLines} onChangeText={setSongLines} multiline />
+            <TouchableOpacity style={s.saveBtn} onPress={saveSong}><Text style={s.saveBtnText}>{editingSong !== null ? '✔ Update' : '+ Save Song'}</Text></TouchableOpacity>
             {songs.map((so, i) => (
               <View key={i} style={s.rowFlex}>
-                <TouchableOpacity style={{ flex: 1 }} onPress={() => pushItem({ type: 'hymn', title: so.title, lines: so.lines })}>
-                  <Text style={s.rowFlexText}>{so.title}</Text>
-                </TouchableOpacity>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => pushItem({ type: 'hymn', title: so.title, lines: so.lines })}><Text style={s.rowFlexText}>{so.title}</Text></TouchableOpacity>
                 <TouchableOpacity style={s.miniBtn} onPress={() => editSong(i)}><Text style={s.miniBtnText}>Edit</Text></TouchableOpacity>
                 <TouchableOpacity style={s.delBtn} onPress={() => deleteSong(i)}><Text style={s.miniBtnText}>Del</Text></TouchableOpacity>
               </View>
             ))}
-
-            <Text style={s.sub}>Announcements {editingAnn !== null ? '(editing)' : ''}</Text>
-            <TextInput style={s.input} placeholder="Announcement text" placeholderTextColor="#666" value={annText} onChangeText={setAnnText} multiline />
-            <TouchableOpacity style={s.saveBtn} onPress={saveAnn}><Text style={s.saveBtnText}>{editingAnn !== null ? '✔ Update' : '+ Save Announcement'}</Text></TouchableOpacity>
-            {announcements.map((a, i) => (
-              <View key={i} style={s.rowFlex}>
-                <TouchableOpacity style={{ flex: 1 }} onPress={() => pushItem({ type: 'announce', title: 'Announcement', text: a })}>
-                  <Text style={s.rowFlexText}>{a}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.miniBtn} onPress={() => editAnn(i)}><Text style={s.miniBtnText}>Edit</Text></TouchableOpacity>
-                <TouchableOpacity style={s.delBtn} onPress={() => deleteAnn(i)}><Text style={s.miniBtnText}>Del</Text></TouchableOpacity>
-              </View>
-            ))}
-
-            <Text style={s.sub}>Graphics (Lower Third / Ticker / Countdown)</Text>
-            <TextInput style={s.input} placeholder="Lower third name" placeholderTextColor="#666" value={lowerName} onChangeText={setLowerName} />
-            <TextInput style={s.input} placeholder="Lower third role/title" placeholderTextColor="#666" value={lowerRole} onChangeText={setLowerRole} />
-            <TextInput style={s.input} placeholder="Ticker text (slow single-line scroll)" placeholderTextColor="#666" value={tickerText} onChangeText={setTickerText} />
-            <TextInput style={s.input} placeholder="Countdown minutes" placeholderTextColor="#666" value={countMins} onChangeText={setCountMins} keyboardType="number-pad" />
+            <Text style={s.sub}>Announcements</Text>
+            <TextInput style={s.input} placeholder="Announcement text" value={annText} onChangeText={setAnnText} multiline />
+            <TouchableOpacity style={s.saveBtn} onPress={saveAnn}><Text style={s.saveBtnText}>{editingAnn !== null ? '✔ Update' : '+ Save'}</Text></TouchableOpacity>
+            <Text style={s.sub}>Graphics</Text>
+            <TextInput style={s.input} placeholder="Lower third name" value={lowerName} onChangeText={setLowerName} />
+            <TextInput style={s.input} placeholder="Lower third role" value={lowerRole} onChangeText={setLowerRole} />
+            <TextInput style={s.input} placeholder="Ticker text" value={tickerText} onChangeText={setTickerText} />
+            <TextInput style={s.input} placeholder="Countdown minutes" value={countMins} onChangeText={setCountMins} keyboardType="number-pad" />
             <TouchableOpacity style={s.saveBtn} onPress={saveGraphics}><Text style={s.saveBtnText}>💾 Save Graphics</Text></TouchableOpacity>
           </View>
         )}
@@ -514,15 +392,13 @@ export default function DirectorConsole() {
         {tab === 'Rundown' && (
           <View style={s.panel}>
             <Text style={s.panelTitle}>RUNDOWN</Text>
-            <View style={s.addField}>
-              <TextInput style={s.input} placeholder="Item text" placeholderTextColor="#666" value={rdText} onChangeText={setRdText} />
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {CATEGORIES.map((c) => (
-                  <TouchableOpacity key={c} style={[s.chip, rdCat === c && s.chipActive]} onPress={() => setRdCat(c)}><Text style={s.chipText}>{c}</Text></TouchableOpacity>
-                ))}
-              </ScrollView>
-              <TouchableOpacity style={s.saveBtn} onPress={addRundown}><Text style={s.saveBtnText}>+ Add to Rundown</Text></TouchableOpacity>
-            </View>
+            <TextInput style={s.input} placeholder="Item text" value={rdText} onChangeText={setRdText} />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {CATEGORIES.map((c) => (
+                <TouchableOpacity key={c} style={[s.chip, rdCat === c && s.chipActive]} onPress={() => setRdCat(c)}><Text style={s.chipText}>{c}</Text></TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={s.saveBtn} onPress={addRundown}><Text style={s.saveBtnText}>+ Add to Rundown</Text></TouchableOpacity>
             {rundown.map((r) => (
               <TouchableOpacity key={r.id} style={[s.row, activeRundown === r.id && s.rowActive]} onPress={() => activateRundown(r)}>
                 <Text style={s.rowText}>{r.text} · {r.category}</Text>
@@ -534,32 +410,44 @@ export default function DirectorConsole() {
 
         {tab === 'Settings' && (
           <View style={s.panel}>
-            <Text style={s.panelTitle}>SETTINGS</Text>
-
-            <Text style={s.sub}>CUSTOM RTMP (Castr / Restream / YouTube / Twitch / FB Live Producer)</Text>
-            <TextInput style={s.input} placeholder="rtmps://live-api-s.facebook.com:443/rtmp/" placeholderTextColor="#666" value={rtmpUrl} onChangeText={(t) => { setRtmpUrl(t); AsyncStorage.setItem('rtmpUrl', t); }} autoCapitalize="none" />
-            <TextInput style={s.input} placeholder="Stream key" placeholderTextColor="#666" value={rtmpKey} onChangeText={(t) => { setRtmpKey(t); AsyncStorage.setItem('rtmpKey', t); }} autoCapitalize="none" />
-
-            <View style={s.settingRow}><Text style={s.settingLabel}>Picture-in-Picture</Text><Switch value={pipOn} onValueChange={setPipOn} /></View>
-            <View style={s.settingRow}><Text style={s.settingLabel}>Resolution (HD)</Text>
+            <Text style={s.panelTitle}>SETTINGS & EFFECTS</Text>
+            <Text style={s.sub}>CUSTOM RTMP (YouTube / Twitch / Castr / Facebook Live Producer)</Text>
+            <TextInput style={s.input} placeholder="rtmps://live-api-s.facebook.com:443/rtmp/" value={rtmpUrl} onChangeText={(t) => { setRtmpUrl(t); AsyncStorage.setItem('rtmpUrl', t); }} />
+            <TextInput style={s.input} placeholder="Stream key" value={rtmpKey} onChangeText={(t) => { setRtmpKey(t); AsyncStorage.setItem('rtmpKey', t); }} />
+            <View style={s.settingRow}><Text style={s.settingLabel}>Resolution</Text>
               {(['720p30', '1080p30', '1080p60'] as const).map((r) => (
-                <TouchableOpacity key={r} style={[s.chip, resolution === r && s.chipActive]} onPress={() => { setResolution(r); AsyncStorage.setItem('resolution', r); if (isLive) Alert.alert('HD change', 'New resolution applies on the next Go Live. Stop and Go Live again to switch.'); }}><Text style={s.chipText}>{r}</Text></TouchableOpacity>
+                <TouchableOpacity key={r} style={[s.chip, resolution === r && s.chipActive]} onPress={() => setResolution(r)}><Text style={s.chipText}>{r}</Text></TouchableOpacity>
               ))}
             </View>
-            <View style={s.settingRow}><Text style={s.settingLabel}>Grade Preset</Text>
+            <Text style={s.sub}>COLOR GRADING</Text>
+            <View style={s.settingRow}>
               {GRADE_PRESETS.map((g) => (
-                <TouchableOpacity key={g} style={[s.chip, grade.preset === g && s.chipActive]} onPress={() => { const ng = { ...grade, preset: g }; setGrade(ng); room.current?.publish({ type: 'grade', grade: ng }); }}><Text style={s.chipText}>{g}</Text></TouchableOpacity>
+                <TouchableOpacity key={g} style={[s.chip, currentGradePreset === g && s.chipActive]} onPress={() => handleGradeChange(g)}>
+                  <Text style={s.chipText}>{g}</Text>
+                </TouchableOpacity>
               ))}
             </View>
-            <Text style={s.note}>Note: HD resolution is applied to the encoder at Go Live. Overlays (scripture, lyrics, ticker, lower third, countdown) are baked into the stream by the native compositor.</Text>
-            <View style={s.settingRow}><Text style={s.settingLabel}>Room Code</Text>
-              <TextInput style={[s.input, { flex: 1 }]} value={roomCode} onChangeText={setRoomCode} autoCapitalize="characters" />
+            <Text style={s.sub}>AUDIO BALANCE</Text>
+            <View style={s.settingRow}>
+              <Text style={s.settingLabel}>Mic: {micGain.toFixed(1)}</Text>
+              <TouchableOpacity style={s.miniBtn} onPress={() => handleAudioChange('mic', -0.1)}><Text style={s.miniBtnText}>-</Text></TouchableOpacity>
+              <TouchableOpacity style={s.miniBtn} onPress={() => handleAudioChange('mic', 0.1)}><Text style={s.miniBtnText}>+</Text></TouchableOpacity>
             </View>
-            <TouchableOpacity style={s.stopBtn} onPress={async () => { await disconnectFacebook(); setFbDestinations([]); setSelectedDest(null); }}><Text style={s.goBtnText}>Disconnect Facebook</Text></TouchableOpacity>
+            <View style={s.settingRow}>
+              <Text style={s.settingLabel}>Media: {mediaGain.toFixed(1)}</Text>
+              <TouchableOpacity style={s.miniBtn} onPress={() => handleAudioChange('media', -0.1)}><Text style={s.miniBtnText}>-</Text></TouchableOpacity>
+              <TouchableOpacity style={s.miniBtn} onPress={() => handleAudioChange('media', 0.1)}><Text style={s.miniBtnText}>+</Text></TouchableOpacity>
+            </View>
+            <Text style={s.sub}>MEDIA SOURCE (Image Overlay)</Text>
+            <TextInput style={s.input} placeholder="/path/to/image.jpg" value={mediaPath} onChangeText={setMediaPath} />
+            <View style={s.settingRow}>
+              <TouchableOpacity style={s.saveBtn} onPress={() => { if(mediaPath) showImageMedia(mediaPath); else Alert.alert('Error', 'Enter path'); }}><Text style={s.saveBtnText}>Show</Text></TouchableOpacity>
+              <TouchableOpacity style={s.stopBtn} onPress={clearImageMedia}><Text style={s.goBtnText}>Clear</Text></TouchableOpacity>
+            </View>
+            <View style={s.settingRow}><Text style={s.settingLabel}>Room Code</Text><TextInput style={[s.input, { flex: 1 }]} value={roomCode} onChangeText={setRoomCode} /></View>
           </View>
         )}
       </ScrollView>
-
       <View style={s.nav}>
         {(['Scenes', 'Library', 'Rundown', 'Settings'] as Tab[]).map((t) => (
           <TouchableOpacity key={t} style={s.navItem} onPress={() => setTab(t)}>
@@ -567,10 +455,9 @@ export default function DirectorConsole() {
           </TouchableOpacity>
         ))}
       </View>
-
       {!permission?.granted && !streamMode && (
         <View style={s.camOverlay}>
-          <Text style={s.camText}>Camera permission needed for streaming</Text>
+          <Text style={s.camText}>Camera permission needed</Text>
           <TouchableOpacity style={s.goBtn} onPress={requestPermission}><Text style={s.goBtnText}>Grant Camera</Text></TouchableOpacity>
         </View>
       )}
@@ -578,123 +465,27 @@ export default function DirectorConsole() {
   );
 }
 
-function CountdownBox({ minutes }: { minutes: number }) {
-  const [secs, setSecs] = useState(minutes * 60);
-  useEffect(() => {
-    setSecs(minutes * 60);
-    const t = setInterval(() => setSecs((v) => (v > 0 ? v - 1 : 0)), 1000);
-    return () => clearInterval(t);
-  }, [minutes]);
-  const mm = String(Math.floor(secs / 60)).padStart(2, '0');
-  const ss = String(secs % 60).padStart(2, '0');
-  return (
-    <View style={s.countBox}>
-      <Text style={[s.countText, secs <= 10 && { color: '#ef4444' }]}>{mm}:{ss}</Text>
-    </View>
-  );
-}
-
-function ClockBox() {
-  const [time, setTime] = useState(new Date());
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  const hh = String(time.getHours()).padStart(2, '0');
-  const mm = String(time.getMinutes()).padStart(2, '0');
-  const ss = String(time.getSeconds()).padStart(2, '0');
-  return (
-    <View style={s.clockBox}>
-      <Text style={s.clockText}>{hh}:{mm}:{ss}</Text>
-    </View>
-  );
-}
-
-function ScrollingTicker({ text }: { text: string }) {
-  const scrollAnim = useRef(new Animated.Value(0)).current;
-  const charWidth = 7;
-  const totalWidth = text.length * charWidth;
-
-  useEffect(() => {
-    scrollAnim.setValue(200);
-    const animation = Animated.loop(
-      Animated.timing(scrollAnim, {
-        toValue: -totalWidth,
-        duration: Math.max(8000, text.length * 220),
-        useNativeDriver: true,
-      })
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [text, totalWidth, scrollAnim]);
-
-  return (
-    <View style={s.ticker}>
-      <View style={s.newsBlock}><Text style={s.newsText}>NEWS</Text></View>
-      <View style={s.tickerScrollArea}>
-        <Animated.Text style={[s.tickerText, { transform: [{ translateX: scrollAnim }] }]} numberOfLines={1}>
-          {text}
-        </Animated.Text>
-      </View>
-      <ClockBox />
-    </View>
-  );
-}
-
-function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, camera, nativeCam, hideCam }: any) {
+function Monitor({ label, layout, liveItem, pipOn, lyricsColor, live, camera, nativeCam, hideCam }: any) {
   const showCam = layout !== 'Blank' && camera;
   return (
     <View style={s.monitor}>
-      <View style={s.monitorHeader}>
-        <Text style={s.monitorLabel}>{label}</Text>
-        {live ? <Text style={s.liveTag}>● LIVE</Text> : null}
-      </View>
+      <View style={s.monitorHeader}><Text style={s.monitorLabel}>{label}</Text>{live ? <Text style={s.liveTag}>● LIVE</Text> : null}</View>
       <View style={s.monitorBody}>
-        {nativeCam ? (
-          <NativeCompositorView style={StyleSheet.absoluteFill} />
-        ) : showCam && !hideCam ? (
-          <CameraView style={StyleSheet.absoluteFill} facing="back" />
-        ) : (
-          <View style={s.blankBg} />
-        )}
+        {nativeCam ? <NativeCompositorView style={StyleSheet.absoluteFill} /> : showCam && !hideCam ? <CameraView style={StyleSheet.absoluteFill} facing="back" /> : <View style={s.blankBg} />}
         {layout === 'Blank' && !nativeCam ? <View style={s.blankBg} /> : null}
-
         {(layout === 'Sermon' || layout === 'Scripture Full') && liveItem?.type === 'scripture' && (
           <View style={[s.scriptureCard, layout === 'Scripture Full' && s.scriptureFull]}>
-            <Text style={s.scriptureRef}>{liveItem.reference} ({liveItem.version})</Text>
-            <Text style={s.scriptureText}>{liveItem.text}</Text>
+            <Text style={s.scriptureRef}>{liveItem.reference}</Text><Text style={s.scriptureText}>{liveItem.text}</Text>
           </View>
         )}
-
         {(layout === 'Worship' || layout === 'Lyrics Full') && liveItem?.type === 'hymn' && (
           <View style={[s.lyricsBar, { backgroundColor: lyricsColor }]}>
             <Text style={s.lyricsTitle}>{liveItem.title}</Text>
             <Text style={s.lyricsLine} numberOfLines={2}>{liveItem.lines[liveItem.lineIndex || 0]}</Text>
-            <Text style={s.lyricsCount}>{(liveItem.lineIndex || 0) + 1}/{liveItem.lines.length}</Text>
           </View>
         )}
-
-        {liveItem?.type === 'announce' && (
-          <View style={s.announceCard}>
-            <Text style={s.announceTitle}>ANNOUNCEMENT</Text>
-            <Text style={s.announceText}>{liveItem.text}</Text>
-          </View>
-        )}
-
-        {liveItem?.type === 'ticker' && <ScrollingTicker text={liveItem.text} />}
-
-        {liveItem?.type === 'lower' && (
-          <View style={s.lowerCard}>
-            <Text style={s.lowerName}>{liveItem.name}</Text>
-            <Text style={s.lowerRole}>{liveItem.role}</Text>
-          </View>
-        )}
-
-        {liveItem?.type === 'countdown' && <CountdownBox minutes={liveItem.minutes} />}
-
-        {live && <ClockBox />}
-
-        {pipOn && layout === 'Worship' && <View style={s.pip}><Text style={s.pipLabel}>PASTOR</Text></View>}
+        {liveItem?.type === 'lower' && <View style={s.lowerCard}><Text style={s.lowerName}>{liveItem.name}</Text><Text style={s.lowerRole}>{liveItem.role}</Text></View>}
+        {liveItem?.type === 'ticker' && <View style={s.ticker}><Text style={s.tickerText}>{liveItem.text}</Text></View>}
       </View>
       <Text style={s.layoutTag}>{layout.toUpperCase()}</Text>
     </View>
@@ -704,104 +495,37 @@ function Monitor({ label, layout, liveItem, grade, pipOn, lyricsColor, live, cam
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0d1117' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: '#161b22', borderBottomWidth: 1, borderBottomColor: '#30363d' },
-  title: { fontSize: 22, fontWeight: '800', color: '#fff' },
-  accent: { color: '#ff6a00' },
-  subtitle: { fontSize: 9, color: '#8b949e', letterSpacing: 2 },
+  title: { fontSize: 22, fontWeight: '800', color: '#fff' }, accent: { color: '#ff6a00' }, subtitle: { fontSize: 9, color: '#8b949e', letterSpacing: 2 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#21262d', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20 },
-  pillLive: { backgroundColor: '#7f1d1d' },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#8b949e' },
-  dotLive: { backgroundColor: '#ef4444' },
-  pillText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  btn: { backgroundColor: '#1f6feb', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
-  btnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#21262d', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20 }, pillLive: { backgroundColor: '#7f1d1d' },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#8b949e' }, dotLive: { backgroundColor: '#ef4444' }, pillText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 10, backgroundColor: '#0d1117' },
-  liveChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#21262d', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-  liveChipText: { color: '#c9d1d9', fontSize: 11 },
-  clearText: { color: '#ef4444', fontSize: 11, fontWeight: '700' },
-  roomText: { color: '#8b949e', fontSize: 11 },
-  scroll: { padding: 10, paddingBottom: 100 },
-  monitors: { flexDirection: 'row', gap: 8 },
+  liveChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#21262d', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 }, liveChipText: { color: '#c9d1d9', fontSize: 11 }, clearText: { color: '#ef4444', fontSize: 11, fontWeight: '700' },
+  roomText: { color: '#8b949e', fontSize: 11 }, scroll: { padding: 10, paddingBottom: 100 }, monitors: { flexDirection: 'row', gap: 8 },
   monitor: { flex: 1, backgroundColor: '#161b22', borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: '#30363d' },
-  monitorHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 6 },
-  monitorLabel: { color: '#8b949e', fontSize: 10, fontWeight: '700' },
-  liveTag: { color: '#ef4444', fontSize: 10, fontWeight: '700' },
-  monitorBody: { aspectRatio: 16 / 9, backgroundColor: '#000', position: 'relative', overflow: 'hidden' },
-  blankBg: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000' },
-  scriptureCard: { position: 'absolute', right: 6, top: 6, bottom: 6, width: '58%', backgroundColor: 'rgba(13,17,23,0.85)', borderRadius: 8, padding: 10, justifyContent: 'center' },
-  scriptureFull: { left: 6, width: undefined, right: 6 },
-  scriptureRef: { color: '#facc15', fontWeight: '800', fontSize: 13, marginBottom: 6 },
-  scriptureText: { color: '#fff', fontWeight: '700', fontSize: 14, textAlign: 'center' },
-  lyricsBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingVertical: 8, paddingHorizontal: 10 },
-  lyricsTitle: { color: '#0d1117', fontSize: 9, fontWeight: '700', opacity: 0.7 },
-  lyricsLine: { color: '#0d1117', fontWeight: '800', fontSize: 16, textAlign: 'center', lineHeight: 20 },
-  lyricsCount: { position: 'absolute', top: 6, right: 8, color: '#0d1117', fontSize: 9, fontWeight: '700', opacity: 0.6 },
+  monitorHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 6 }, monitorLabel: { color: '#8b949e', fontSize: 10, fontWeight: '700' }, liveTag: { color: '#ef4444', fontSize: 10, fontWeight: '700' },
+  monitorBody: { aspectRatio: 16 / 9, backgroundColor: '#000', position: 'relative', overflow: 'hidden' }, blankBg: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000' },
+  scriptureCard: { position: 'absolute', right: 6, top: 6, bottom: 6, width: '58%', backgroundColor: 'rgba(13,17,23,0.85)', borderRadius: 8, padding: 10, justifyContent: 'center' }, scriptureFull: { left: 6, width: undefined, right: 6 },
+  scriptureRef: { color: '#facc15', fontWeight: '800', fontSize: 13, marginBottom: 6 }, scriptureText: { color: '#fff', fontWeight: '700', fontSize: 14, textAlign: 'center' },
+  lyricsBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingVertical: 8, paddingHorizontal: 10 }, lyricsTitle: { color: '#0d1117', fontSize: 9, fontWeight: '700', opacity: 0.7 }, lyricsLine: { color: '#0d1117', fontWeight: '800', fontSize: 16, textAlign: 'center', lineHeight: 20 },
   prompterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, backgroundColor: '#161b22', padding: 8, borderRadius: 8 },
-  prompterBtn: { backgroundColor: '#ff6a00', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
-  prompterBtnText: { color: '#0d1117', fontWeight: '800', fontSize: 12 },
-  prompterLabel: { color: '#c9d1d9', fontSize: 12, fontWeight: '700' },
-  announceCard: { position: 'absolute', left: 10, right: 10, top: '30%', backgroundColor: 'rgba(13,17,23,0.9)', borderRadius: 10, padding: 12, alignItems: 'center' },
-  announceTitle: { color: '#ff6a00', fontWeight: '800', fontSize: 10, marginBottom: 4 },
-  announceText: { color: '#fff', fontWeight: '700', fontSize: 14, textAlign: 'center' },
-  ticker: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', backgroundColor: '#000', height: 22, alignItems: 'center' },
-  newsBlock: { backgroundColor: '#facc15', paddingHorizontal: 8, height: '100%', justifyContent: 'center' },
-  newsText: { color: '#000', fontWeight: '800', fontSize: 10 },
-  tickerScrollArea: { flex: 1, overflow: 'hidden', height: '100%', justifyContent: 'center' },
-  tickerText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  clockBox: { backgroundColor: '#ef4444', paddingHorizontal: 6, height: '100%', justifyContent: 'center' },
-  clockText: { color: '#fff', fontSize: 10, fontWeight: '800' },
-  lowerCard: { position: 'absolute', left: 8, bottom: 28, backgroundColor: 'rgba(13,17,23,0.85)', borderLeftWidth: 3, borderLeftColor: '#ff6a00', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4 },
-  lowerName: { color: '#fff', fontWeight: '800', fontSize: 13 },
-  lowerRole: { color: '#facc15', fontSize: 10, fontWeight: '600' },
-  countBox: { position: 'absolute', top: 6, left: '40%', width: 80, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8, alignItems: 'center', paddingVertical: 4 },
-  countText: { color: '#22c55e', fontWeight: '800', fontSize: 20 },
-  pip: { position: 'absolute', top: 6, right: 6, width: 60, height: 44, backgroundColor: 'rgba(0,0,0,0.5)', borderWidth: 1, borderColor: '#fff', borderRadius: 4, justifyContent: 'flex-end', alignItems: 'flex-end', padding: 2 },
-  pipLabel: { color: '#fff', fontSize: 7, fontWeight: '700' },
-  layoutTag: { position: 'absolute', bottom: 4, left: 6, color: '#fff', fontSize: 8, fontWeight: '700', backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 4, borderRadius: 3 },
-  takeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, backgroundColor: '#161b22', padding: 12, borderRadius: 10 },
-  takeLabel: { color: '#8b949e', fontSize: 10, fontWeight: '700' },
-  takeSub: { color: '#fff', fontSize: 14, fontWeight: '700', marginTop: 2 },
-  takeBtns: { flexDirection: 'row', gap: 8 },
-  takeBtn: { backgroundColor: '#ff6a00', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
-  takeBtnText: { color: '#0d1117', fontWeight: '800', fontSize: 13 },
-  goBtn: { backgroundColor: '#ef4444', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
-  goBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
-  stopBtn: { backgroundColor: '#ef4444', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
-  disabled: { opacity: 0.4 },
-  chips: { flexDirection: 'row', marginTop: 10, gap: 6 },
-  chip: { backgroundColor: '#21262d', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, marginRight: 6 },
-  chipActive: { backgroundColor: '#ff6a00' },
-  chipText: { color: '#c9d1d9', fontSize: 12, fontWeight: '600' },
-  chipTextActive: { color: '#0d1117' },
-  panel: { backgroundColor: '#161b22', borderRadius: 10, padding: 12, marginTop: 12 },
-  panelTitle: { color: '#fff', fontSize: 14, fontWeight: '800', marginBottom: 10 },
+  prompterBtn: { backgroundColor: '#ff6a00', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 }, prompterBtnText: { color: '#0d1117', fontWeight: '800', fontSize: 12 }, prompterLabel: { color: '#c9d1d9', fontSize: 12, fontWeight: '700' },
+  lowerCard: { position: 'absolute', left: 8, bottom: 28, backgroundColor: 'rgba(13,17,23,0.85)', borderLeftWidth: 3, borderLeftColor: '#ff6a00', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4 }, lowerName: { color: '#fff', fontWeight: '800', fontSize: 13 }, lowerRole: { color: '#facc15', fontSize: 10, fontWeight: '600' },
+  ticker: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#000', height: 22, justifyContent: 'center', paddingHorizontal: 10 }, tickerText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  takeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, backgroundColor: '#161b22', padding: 12, borderRadius: 10 }, takeLabel: { color: '#8b949e', fontSize: 10, fontWeight: '700' }, takeSub: { color: '#fff', fontSize: 14, fontWeight: '700', marginTop: 2 }, takeBtns: { flexDirection: 'row', gap: 8 },
+  takeBtn: { backgroundColor: '#ff6a00', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 }, takeBtnText: { color: '#0d1117', fontWeight: '800', fontSize: 13 },
+  goBtn: { backgroundColor: '#ef4444', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 }, goBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  stopBtn: { backgroundColor: '#ef4444', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 }, disabled: { opacity: 0.4 },
+  chips: { flexDirection: 'row', marginTop: 10, gap: 6 }, chip: { backgroundColor: '#21262d', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, marginRight: 6 }, chipActive: { backgroundColor: '#ff6a00' }, chipText: { color: '#c9d1d9', fontSize: 12, fontWeight: '600' }, chipTextActive: { color: '#0d1117' },
+  panel: { backgroundColor: '#161b22', borderRadius: 10, padding: 12, marginTop: 12 }, panelTitle: { color: '#fff', fontSize: 14, fontWeight: '800', marginBottom: 10 },
   sub: { color: '#8b949e', fontSize: 11, fontWeight: '700', marginTop: 10, marginBottom: 6 },
-  note: { color: '#8b949e', fontSize: 10, fontStyle: 'italic', marginTop: 4, marginBottom: 8 },
-  row: { backgroundColor: '#21262d', padding: 10, borderRadius: 8, marginBottom: 6 },
-  rowActive: { backgroundColor: '#ff6a00' },
-  rowText: { color: '#c9d1d9', fontSize: 13 },
-  rowFlex: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#21262d', padding: 8, borderRadius: 8, marginBottom: 6 },
-  rowFlexText: { color: '#c9d1d9', fontSize: 12 },
-  miniBtn: { backgroundColor: '#30363d', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
-  delBtn: { backgroundColor: '#7f1d1d', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
-  miniBtnText: { color: '#fff', fontSize: 10, fontWeight: '700' },
-  addField: { marginBottom: 8 },
+  row: { backgroundColor: '#21262d', padding: 10, borderRadius: 8, marginBottom: 6 }, rowText: { color: '#c9d1d9', fontSize: 13 },
   input: { backgroundColor: '#0d1117', color: '#fff', padding: 10, borderRadius: 8, marginBottom: 6, borderWidth: 1, borderColor: '#30363d' },
-  verRow: { flexDirection: 'row', gap: 6, alignItems: 'center', marginBottom: 6 },
-  saveBtn: { backgroundColor: '#238636', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, marginTop: 6, alignSelf: 'flex-start' },
-  saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  sceneGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  sceneCard: { width: '30%', backgroundColor: '#21262d', padding: 14, borderRadius: 10, alignItems: 'center' },
-  sceneName: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  sceneSub: { color: '#8b949e', fontSize: 9, marginTop: 2 },
-  nextBtn: { backgroundColor: '#ff6a00', padding: 12, borderRadius: 8, marginTop: 10, alignItems: 'center' },
-  nextBtnText: { color: '#0d1117', fontWeight: '800' },
-  settingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' },
-  settingLabel: { color: '#c9d1d9', fontSize: 12, width: 110 },
+  saveBtn: { backgroundColor: '#238636', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, marginTop: 6, alignSelf: 'flex-start' }, saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  sceneGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, sceneCard: { width: '30%', backgroundColor: '#21262d', padding: 14, borderRadius: 10, alignItems: 'center' }, sceneName: { color: '#fff', fontWeight: '700', fontSize: 12 }, sceneSub: { color: '#8b949e', fontSize: 9, marginTop: 2 },
+  settingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }, settingLabel: { color: '#c9d1d9', fontSize: 12, width: 110 },
+  miniBtn: { backgroundColor: '#30363d', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6 }, miniBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   nav: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', backgroundColor: '#161b22', borderTopWidth: 1, borderTopColor: '#30363d', paddingBottom: 20 },
-  navItem: { flex: 1, alignItems: 'center', paddingVertical: 12 },
-  navText: { color: '#8b949e', fontSize: 12, fontWeight: '600' },
-  navTextActive: { color: '#ff6a00' },
-  camOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', gap: 12 },
-  camText: { color: '#fff', fontSize: 14 },
+  navItem: { flex: 1, alignItems: 'center', paddingVertical: 12 }, navText: { color: '#8b949e', fontSize: 12, fontWeight: '600' }, navTextActive: { color: '#ff6a00' },
+  camOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', gap: 12 }, camText: { color: '#fff', fontSize: 14 },
 });
