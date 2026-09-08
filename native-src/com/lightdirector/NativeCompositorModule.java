@@ -149,6 +149,9 @@ public class NativeCompositorModule extends ReactContextBaseJavaModule implement
     reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit(name, data);
   }
 
+  @Override public void onConnectionStartedRtmp(String rtmpUrl) {
+    // Connection attempt started — nothing to update in the UI yet
+  }
   @Override public void onConnectionSuccessRtmp() {
     WritableMap m = Arguments.createMap(); m.putString("url", currentUrl); sendEvent("onStreamConnected", m);
   }
