@@ -1,4 +1,4 @@
-herepackage com.lightdirector;
+package com.lightdirector;
 
 import android.content.Context;
 import android.view.SurfaceView;
