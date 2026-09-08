@@ -1,187 +1,207 @@
-herepackage com.lightdirector;
+package com.lightdirector;
 
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Point;
 import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
-import org.json.JSONObject;
+import com.pedro.rtplibrary.view.GlInterface;
 import org.json.JSONException;
-import com.pedro.encoder.input.video.RootEncoder;
+import org.json.JSONObject;
 import java.util.Locale;
 
 public class NativeOverlayRenderer {
-private final RootEncoder encoder;
-private final OverlayGlFilter filter;
-private final Handler mainHandler = new Handler(Looper.getMainLooper());
-private JSONObject state;
-private final int width;
-private final int height;
+  private final GlInterface gl;
+  private final OverlayGlFilter filter;
+  private final Handler mainHandler = new Handler(Looper.getMainLooper());
+  private JSONObject state;
+  private Bitmap mediaBitmap = null;
+  private int width = 1280;
+  private int height = 720;
 
-public NativeOverlayRenderer(RootEncoder encoder) {
-    this.encoder = encoder;
-    this.width = encoder.getVideoWidth();
-    this.height = encoder.getVideoHeight();
-    this.filter = new OverlayGlFilter(width, height);
-    this.encoder.addVideoEffect(this.filter);
-}
-
-public void updateOverlayState(JSONObject state) {
-    this.state = state;
-    mainHandler.post(() -> {
-        Bitmap bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bmp);
-        drawOverlay(canvas, this.state);
-        filter.updateBitmap(bmp);
-    });
-}
-
-private void drawOverlay(Canvas canvas, JSONObject s) {
+  public NativeOverlayRenderer(GlInterface gl) {
+    this.gl = gl;
     try {
-        String layout = s.optString("layout", "Blank");
-        if ("Blank".equals(layout)) {
-            canvas.drawColor(Color.BLACK);
-            return;
-        }
-        if ("CameraOnly".equals(layout)) {
-            canvas.drawColor(Color.TRANSPARENT);
-            return;
-        }
-        canvas.drawColor(Color.TRANSPARENT);
-        if (s.has("scripture") && !"null".equals(s.optString("scripture"))) {
-            JSONObject o = s.getJSONObject("scripture");
-            String ref = o.optString("reference", "");
-            String txt = o.optString("text", "");
-            float cardW = width * 0.8f;
-            float cardH = height * 0.4f;
-            float left = (width - cardW) / 2f;
-            float top = (height - cardH) / 2f;
-            Paint bg = new Paint();
-            bg.setColor(Color.argb(180, 0, 0, 0));
-            canvas.drawRoundRect(new RectF(left, top, left + cardW, top + cardH), 20, 20, bg);
-            Paint refPaint = new Paint();
-            refPaint.setColor(Color.YELLOW);
-            refPaint.setTextSize(cardH * 0.1f);
-            refPaint.setFakeBoldText(true);
-            canvas.drawText(ref, left + 20, top + refPaint.getTextSize() + 20, refPaint);
-            TextPaint txtPaint = new TextPaint();
-            txtPaint.setColor(Color.WHITE);
-            txtPaint.setTextSize(cardH * 0.08f);
-            int txtWidth = (int) (cardW - 40);
-            StaticLayout layout = new StaticLayout(txt, txtPaint, txtWidth, Layout.Alignment.ALIGN_NORMAL, 1.0f, 0, false);
-            canvas.save();
-            canvas.translate(left + 20, top + refPaint.getTextSize() + 40);
-            layout.draw(canvas);
-            canvas.restore();
-        }
-        if (s.has("lyrics") && !"null".equals(s.optString("lyrics"))) {
-            JSONObject o = s.getJSONObject("lyrics");
-            String title = o.optString("title", "");
-            String line = o.optString("line", "");
-            int idx = o.optInt("index", 0);
-            int total = o.optInt("total", 0);
-            float barH = height * 0.2f;
-            float top = height - barH;
-            Paint bg = new Paint();
-            bg.setColor(Color.argb(180, 0, 0, 0));
-            canvas.drawRect(0, top, width, height, bg);
-            Paint titlePaint = new Paint();
-            titlePaint.setColor(Color.YELLOW);
-            titlePaint.setTextSize(barH * 0.2f);
-            canvas.drawText(title, 20, top + titlePaint.getTextSize() + 10, titlePaint);
-            Paint linePaint = new Paint();
-            linePaint.setColor(Color.WHITE);
-            linePaint.setTextSize(barH * 0.5f);
-            linePaint.setFakeBoldText(true);
-            float lineWidth = linePaint.measureText(line);
-            canvas.drawText(line, (width - lineWidth) / 2f, top + barH * 0.65f, linePaint);
-            Paint cntPaint = new Paint();
-            cntPaint.setColor(Color.YELLOW);
-            cntPaint.setTextSize(barH * 0.2f);
-            String cnt = idx + "/" + total;
-            float cntW = cntPaint.measureText(cnt);
-            canvas.drawText(cnt, width - cntW - 20, top + cntPaint.getTextSize() + 10, cntPaint);
-        }
-        if (s.has("ticker") && !"null".equals(s.optString("ticker"))) {
-            JSONObject o = s.getJSONObject("ticker");
-            String txt = o.optString("text", "");
-            int speed = o.optInt("scrollSpeed", 50);
-            float stripH = height * 0.07f;
-            Paint stripBg = new Paint();
-            stripBg.setColor(Color.BLACK);
-            canvas.drawRect(0, 0, width, stripH, stripBg);
-            Paint newsPaint = new Paint();
-            newsPaint.setColor(Color.YELLOW);
-            newsPaint.setTextSize(stripH * 0.6f);
-            newsPaint.setFakeBoldText(true);
-            float newsW = newsPaint.measureText("NEWS");
-            canvas.drawRect(0, 0, newsW + 40, stripH, new Paint(){{
-                setColor(Color.YELLOW);
-            }});
-            canvas.drawText("NEWS", 20, stripH * 0.75f, newsPaint);
-            Paint txtPaint = new Paint();
-            txtPaint.setColor(Color.WHITE);
-            txtPaint.setTextSize(stripH * 0.6f);
-            float txtW = txtPaint.measureText(txt);
-            long now = System.currentTimeMillis();
-            float offset = ((now / 1000f) * speed) % (txtW + width);
-            float x = width - offset;
-            canvas.drawText(txt, x, stripH * 0.75f, txtPaint);
-            if (x < txtW) {
-                canvas.drawText(txt, x - txtW - width, stripH * 0.75f, txtPaint);
-            }
-        }
-        if (s.has("lowerThird") && !"null".equals(s.optString("lowerThird"))) {
-            JSONObject o = s.getJSONObject("lowerThird");
-            String name = o.optString("name", "");
-            String role = o.optString("role", "");
-            float boxW = width * 0.4f;
-            float boxH = height * 0.15f;
-            Paint boxBg = new Paint();
-            boxBg.setColor(Color.argb(200, 0, 0, 0));
-            canvas.drawRect(20, 20, 20 + boxW, 20 + boxH, boxBg);
-            Paint edge = new Paint();
-            edge.setColor(Color.rgb(255, 140, 0));
-            canvas.drawRect(20, 20, 30, 20 + boxH, edge);
-            Paint namePaint = new Paint();
-            namePaint.setColor(Color.WHITE);
-            namePaint.setTextSize(boxH * 0.4f);
-            namePaint.setFakeBoldText(true);
-            canvas.drawText(name, 40, 20 + namePaint.getTextSize() + 10, namePaint);
-            Paint rolePaint = new Paint();
-            rolePaint.setColor(Color.YELLOW);
-            rolePaint.setTextSize(boxH * 0.3f);
-            canvas.drawText(role, 40, 20 + namePaint.getTextSize() + rolePaint.getTextSize() + 30, rolePaint);
-        }
-        if (s.has("countdown") && !"null".equals(s.optString("countdown"))) {
-            JSONObject o = s.getJSONObject("countdown");
-            int sec = o.optInt("secondsLeft", 0);
-            int mins = sec / 60;
-            int secs = sec % 60;
-            String txt = String.format(Locale.US, "%02d:%02d", mins, secs);
-            float boxW = width * 0.2f;
-            float boxH = height * 0.1f;
-            float left = (width - boxW) / 2f;
-            float top = height * 0.05f;
-            Paint bg = new Paint();
-            bg.setColor(Color.argb(180, 0, 0, 0));
-            canvas.drawRoundRect(new RectF(left, top, left + boxW, top + boxH), 10, 10, bg);
-            Paint txtPaint = new Paint();
-            txtPaint.setColor(sec <= 10 ? Color.RED : Color.GREEN);
-            txtPaint.setTextSize(boxH * 0.6f);
-            txtPaint.setFakeBoldText(true);
-            float txtW = txtPaint.measureText(txt);
-            canvas.drawText(txt, left + (boxW - txtW) / 2f, top + boxH * 0.7f, txtPaint);
-        }
-    } catch (JSONException e) {}
-}
+      Point size = gl.getEncoderSize();
+      if (size != null && size.x > 0 && size.y > 0) {
+        this.width = size.x;
+        this.height = size.y;
+      }
+    } catch (Throwable ignored) {}
+    this.filter = new OverlayGlFilter();
+    gl.addFilter(this.filter);
+  }
 
-public void release() {
+  public void updateOverlayState(JSONObject state) {
+    this.state = state;
+    render();
+  }
+
+  public void showMediaBitmap(Bitmap bitmap) {
+    this.mediaBitmap = bitmap;
+    render();
+  }
+
+  public void clearMediaBitmap() {
+    this.mediaBitmap = null;
+    render();
+  }
+
+  private void render() {
+    mainHandler.post(() -> {
+      Bitmap bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+      Canvas canvas = new Canvas(bmp);
+      if (mediaBitmap != null) {
+        RectF dst = new RectF(0, 0, width, height);
+        canvas.drawBitmap(mediaBitmap, null, dst, null);
+      }
+      drawOverlay(canvas, state);
+      filter.updateBitmap(bmp);
+    });
+  }
+
+  private void drawOverlay(Canvas canvas, JSONObject s) {
+    if (s == null) return;
+    try {
+      String layout = s.optString("layout", "CameraOnly");
+      if ("Blank".equals(layout)) { canvas.drawColor(Color.BLACK); return; }
+      if ("CameraOnly".equals(layout)) return;
+
+      if (s.has("scripture") && !s.isNull("scripture")) {
+        JSONObject o = s.getJSONObject("scripture");
+        String ref = o.optString("reference", "");
+        String txt = o.optString("text", "");
+        float cardW = width * 0.8f;
+        float cardH = height * 0.45f;
+        float left = (width - cardW) / 2f;
+        float top = (height - cardH) / 2f;
+        Paint bg = new Paint();
+        bg.setColor(Color.argb(190, 0, 0, 0));
+        canvas.drawRoundRect(new RectF(left, top, left + cardW, top + cardH), 20, 20, bg);
+        Paint refPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        refPaint.setColor(Color.YELLOW);
+        refPaint.setTextSize(cardH * 0.12f);
+        refPaint.setFakeBoldText(true);
+        canvas.drawText(ref, left + 24, top + refPaint.getTextSize() + 24, refPaint);
+        TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        tp.setColor(Color.WHITE);
+        tp.setTextSize(cardH * 0.10f);
+        StaticLayout sl = new StaticLayout(txt, tp, (int) (cardW - 48), Layout.Alignment.ALIGN_CENTER, 1.1f, 0, false);
+        canvas.save();
+        canvas.translate(left + 24, top + refPaint.getTextSize() + 60);
+        sl.draw(canvas);
+        canvas.restore();
+      }
+
+      if (s.has("lyrics") && !s.isNull("lyrics")) {
+        JSONObject o = s.getJSONObject("lyrics");
+        String title = o.optString("title", "");
+        String line = o.optString("line", "");
+        int idx = o.optInt("index", 0);
+        int total = o.optInt("total", 0);
+        float barH = height * 0.16f;
+        float top = height - barH;
+        Paint bg = new Paint();
+        bg.setColor(Color.argb(200, 0, 0, 0));
+        canvas.drawRect(0, top, width, height, bg);
+        Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        tp.setColor(Color.rgb(250, 204, 21));
+        tp.setTextSize(barH * 0.22f);
+        canvas.drawText(title, 24, top + tp.getTextSize() + 12, tp);
+        Paint lp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        lp.setColor(Color.WHITE);
+        lp.setTextSize(barH * 0.5f);
+        lp.setFakeBoldText(true);
+        float lw = lp.measureText(line);
+        canvas.drawText(line, Math.max(24, (width - lw) / 2f), top + barH * 0.66f, lp);
+        Paint cp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        cp.setColor(Color.rgb(250, 204, 21));
+        cp.setTextSize(barH * 0.22f);
+        String cnt = (idx + 1) + "/" + total;
+        canvas.drawText(cnt, width - cp.measureText(cnt) - 24, top + cp.getTextSize() + 12, cp);
+      }
+
+      if (s.has("ticker") && !s.isNull("ticker")) {
+        JSONObject o = s.getJSONObject("ticker");
+        String txt = o.optString("text", "");
+        int speed = o.optInt("scrollSpeed", 50);
+        float stripH = height * 0.06f;
+        float stripTop = height - stripH;
+        Paint sbg = new Paint();
+        sbg.setColor(Color.BLACK);
+        canvas.drawRect(0, stripTop, width, height, sbg);
+        Paint np = new Paint(Paint.ANTI_ALIAS_FLAG);
+        np.setColor(Color.BLACK);
+        np.setTextSize(stripH * 0.6f);
+        np.setFakeBoldText(true);
+        float newsW = np.measureText("NEWS") + 32;
+        Paint nb = new Paint();
+        nb.setColor(Color.rgb(250, 204, 21));
+        canvas.drawRect(0, stripTop, newsW, height, nb);
+        canvas.drawText("NEWS", 16, stripTop + stripH * 0.72f, np);
+        Paint ttp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ttp.setColor(Color.WHITE);
+        ttp.setTextSize(stripH * 0.6f);
+        float tw = ttp.measureText(txt);
+        long now = System.currentTimeMillis();
+        float off = ((now / 1000f) * speed) % (tw + width);
+        float x = width - off;
+        canvas.drawText(txt, x, stripTop + stripH * 0.72f, ttp);
+        if (x < tw) canvas.drawText(txt, x + tw + 120, stripTop + stripH * 0.72f, ttp);
+      }
+
+      if (s.has("lowerThird") && !s.isNull("lowerThird")) {
+        JSONObject o = s.getJSONObject("lowerThird");
+        String name = o.optString("name", "");
+        String role = o.optString("role", "");
+        float boxW = width * 0.42f;
+        float boxH = height * 0.13f;
+        float bottom = height * 0.10f;
+        float top = height - bottom - boxH;
+        Paint bg = new Paint();
+        bg.setColor(Color.argb(205, 0, 0, 0));
+        canvas.drawRect(24, top, 24 + boxW, top + boxH, bg);
+        Paint edge = new Paint();
+        edge.setColor(Color.rgb(255, 106, 0));
+        canvas.drawRect(24, top, 34, top + boxH, edge);
+        Paint nmp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        nmp.setColor(Color.WHITE);
+        nmp.setTextSize(boxH * 0.42f);
+        nmp.setFakeBoldText(true);
+        canvas.drawText(name, 50, top + nmp.getTextSize() + 12, nmp);
+        Paint rp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        rp.setColor(Color.rgb(250, 204, 21));
+        rp.setTextSize(boxH * 0.30f);
+        canvas.drawText(role, 50, top + nmp.getTextSize() + rp.getTextSize() + 28, rp);
+      }
+
+      if (s.has("countdown") && !s.isNull("countdown")) {
+        int sec = s.getJSONObject("countdown").optInt("secondsLeft", 0);
+        String txt = String.format(Locale.US, "%02d:%02d", sec / 60, sec % 60);
+        float boxW = width * 0.18f;
+        float boxH = height * 0.09f;
+        float left = (width - boxW) / 2f;
+        float top = height * 0.04f;
+        Paint bg = new Paint();
+        bg.setColor(Color.argb(190, 0, 0, 0));
+        canvas.drawRoundRect(new RectF(left, top, left + boxW, top + boxH), 12, 12, bg);
+        Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        tp.setColor(sec <= 10 ? Color.RED : Color.rgb(34, 197, 94));
+        tp.setTextSize(boxH * 0.62f);
+        tp.setFakeBoldText(true);
+        canvas.drawText(txt, left + (boxW - tp.measureText(txt)) / 2f, top + boxH * 0.72f, tp);
+      }
+    } catch (JSONException ignored) {}
+  }
+
+  public void release() {
+    try { gl.removeFilter(filter); } catch (Throwable ignored) {}
     filter.release();
+  }
 }
-                                           }
