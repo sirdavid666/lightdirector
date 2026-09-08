@@ -24,7 +24,9 @@
         "CAMERA",
         "RECORD_AUDIO",
         "INTERNET",
-        "ACCESS_NETWORK_STATE"
+        "ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ],
       "package": "com.lightdirector.app"
     },
@@ -52,6 +54,15 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "efd42767-65ff-408e-a94a-253841eb689e"
+      }
+    },
+    "owner": "sirdavid24"
   }
 }
