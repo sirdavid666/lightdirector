@@ -52,40 +52,37 @@ function withCopyNativeJavaFiles(config) {
 }
 
 function withJitPackRepo(config) {
-  // 1. settings.gradle (dependencyResolutionManagement)
-  config = withSettingsGradle(config, (config) => {
-    const content = config.modResults.contents;
-    if (!content.includes(JITPACK_REPO)) {
-      const reposBlock = /dependencyResolutionManagement\s*{[^}]*repositories\s*{([^}]*)}/s;
-      const match = content.match(reposBlock);
-      if (match) {
-        const before = content.slice(0, match.index + match[0].length - 1);
-        const after = content.slice(match.index + match[0].length - 1);
-        config.modResults.contents = `${before}\n        ${JITPACK_REPO}\n${after}`;
+  return withSettingsGradle(config, (config) => {
+    let content = config.modResults.contents;
+    
+    // Ensure dependencyResolutionManagement block exists with PREFER_SETTINGS and JitPack
+    const hasDependencyResolution = content.includes('dependencyResolutionManagement');
+    
+    if (!hasDependencyResolution) {
+      // Add the entire block at the end
+      content += `\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)\n    repositories {\n        google()\n        mavenCentral()\n        ${JITPACK_REPO}\n    }\n}\n`;
+    } else {
+      // Block exists — ensure PREFER_SETTINGS is set and JitPack is in repositories
+      if (!content.includes('PREFER_SETTINGS')) {
+        content = content.replace(
+          /dependencyResolutionManagement\s*{/,
+          'dependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)'
+        );
+      }
+      if (!content.includes(JITPACK_REPO)) {
+        const reposBlock = /dependencyResolutionManagement\s*{[^}]*repositories\s*{([^}]*)}/s;
+        const match = content.match(reposBlock);
+        if (match) {
+          const before = content.slice(0, match.index + match[0].length - 1);
+          const after = content.slice(match.index + match[0].length - 1);
+          content = `${before}\n        ${JITPACK_REPO}\n${after}`;
+        }
       }
     }
+    
+    config.modResults.contents = content;
     return config;
   });
-
-  // 2. android/app/build.gradle (repositories block inside the app module)
-  config = withAppBuildGradle(config, (config) => {
-    let contents = config.modResults.contents;
-    if (!contents.includes(JITPACK_REPO)) {
-      // Try to inject into an existing repositories { } block
-      const reposMatch = contents.match(/repositories\s*{([^}]*)}/s);
-      if (reposMatch) {
-        const insertPos = reposMatch.index + reposMatch[0].length - 1;
-        contents = contents.slice(0, insertPos) + `\n        ${JITPACK_REPO}` + contents.slice(insertPos);
-      } else {
-        // No repositories block exists — create one at the top level
-        contents = `repositories {\n    ${JITPACK_REPO}\n}\n` + contents;
-      }
-      config.modResults.contents = contents;
-    }
-    return config;
-  });
-
-  return config;
 }
 
 function withRtmpDependency(config) {
