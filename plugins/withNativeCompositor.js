@@ -4,7 +4,6 @@ const {
   withDangerousMod,
   withAppBuildGradle,
   withAndroidManifest,
-  withSettingsGradle,
   withMainApplication,
 } = require('@expo/config-plugins');
 
@@ -18,7 +17,6 @@ const JAVA_FILES = [
   'NativeCompositorPackage.java',
 ];
 
-const JITPACK_REPO = "maven { url 'https://www.jitpack.io' }";
 const RTMP_DEP = "implementation 'com.github.pedroSG94:rtmp-rtsp-stream-client-java:2.2.2'";
 const PERMISSIONS = [
   'android.permission.INTERNET',
@@ -49,42 +47,6 @@ function withCopyNativeJavaFiles(config) {
       return config;
     },
   ]);
-}
-
-function withJitPackRepo(config) {
-  return withSettingsGradle(config, (config) => {
-    let content = config.modResults.contents;
-    
-    // Ensure dependencyResolutionManagement block exists with PREFER_PROJECT and JitPack
-    const hasDependencyResolution = content.includes('dependencyResolutionManagement');
-    
-    if (!hasDependencyResolution) {
-      // Add the entire block at the end
-      content += `\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)\n    repositories {\n        google()\n        mavenCentral()\n        ${JITPACK_REPO}\n    }\n}\n`;
-    } else {
-      // Block exists — ensure PREFER_PROJECT is set and JitPack is in repositories
-      if (!content.includes('PREFER_PROJECT')) {
-        // Remove PREFER_SETTINGS if present, add PREFER_PROJECT
-        content = content.replace(/repositoriesMode\.set\(RepositoriesMode\.PREFER_SETTINGS\)/g, '');
-        content = content.replace(
-          /dependencyResolutionManagement\s*{/,
-          'dependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)'
-        );
-      }
-      if (!content.includes(JITPACK_REPO)) {
-        const reposBlock = /dependencyResolutionManagement\s*{[^}]*repositories\s*{([^}]*)}/s;
-        const match = content.match(reposBlock);
-        if (match) {
-          const before = content.slice(0, match.index + match[0].length - 1);
-          const after = content.slice(match.index + match[0].length - 1);
-          content = `${before}\n        ${JITPACK_REPO}\n${after}`;
-        }
-      }
-    }
-    
-    config.modResults.contents = content;
-    return config;
-  });
 }
 
 function withRtmpDependency(config) {
@@ -148,11 +110,9 @@ function withPackageRegistration(config) {
 
 module.exports = (config) => {
   return withCopyNativeJavaFiles(
-    withJitPackRepo(
-      withRtmpDependency(
-        withPermissions(
-          withPackageRegistration(config)
-        )
+    withRtmpDependency(
+      withPermissions(
+        withPackageRegistration(config)
       )
     )
   );
