@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Alert, Switch, Animated, requireNativeComponent } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Alert, Switch, Animated, requireNativeComponent, NativeModules, DeviceEventEmitter } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { type Layout, type LiveItem, type RoomCommand, layoutForItem } from '@/lib/lightcast';
 import { connectRoom, type RoomConnection } from '@/lib/roomSync';
-import { startPublishing, stopPublishing, setOverlayState, setGrade, setAudioBalance, showImageMedia, clearImageMedia } from '@/lib/streamingService';
 
+const NativeCompositor = NativeModules.NativeCompositor;
 const NativeCompositorView = requireNativeComponent<any>('NativeCompositorView');
 
 const LAYOUTS: Layout[] = ['Worship', 'Sermon', 'Scripture Full', 'Lyrics Full', 'Camera Only', 'Blank'];
@@ -83,6 +83,15 @@ export default function DirectorConsole() {
   const [mediaGain, setMediaGain] = useState(1.0);
   const [mediaPath, setMediaPath] = useState('');
 
+  // Show crash report on launch if one exists (phone-only diagnostics)
+  useEffect(() => {
+    if (NativeCompositor && NativeCompositor.getCrashLog) {
+      NativeCompositor.getCrashLog().then((log: string | null) => {
+        if (log) Alert.alert('Last crash report', String(log).substring(0, 900));
+      }).catch(() => {});
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       const sv = await AsyncStorage.getItem('savedVerses'); if (sv) setSavedVerses(JSON.parse(sv));
@@ -116,6 +125,18 @@ export default function DirectorConsole() {
     }
   }, [liveItem]);
 
+  // Native stream events
+  useEffect(() => {
+    const c1 = DeviceEventEmitter.addListener('onStreamConnected', () => setIsLive(true));
+    const c2 = DeviceEventEmitter.addListener('onStreamDisconnected', () => resetStreamState());
+    const c3 = DeviceEventEmitter.addListener('onStreamError', (ev: any) => {
+      Alert.alert('Stream Error', ev && ev.error ? ev.error : 'Unknown stream error');
+      resetStreamState();
+    });
+    return () => { c1.remove(); c2.remove(); c3.remove(); };
+  }, []);
+
+  // Push overlay state to native renderer (direct module call)
   useEffect(() => {
     const nativeLayout = (programLayout || '').replace(/\s+/g, '');
     const state = {
@@ -126,22 +147,33 @@ export default function DirectorConsole() {
       lowerThird: liveItem?.type === 'lower' ? { name: liveItem.name, role: liveItem.role } : null,
       countdown: liveItem?.type === 'countdown' ? { secondsLeft: countSecs } : null,
     };
-    setOverlayState(state as any).catch(() => {});
+    if (NativeCompositor) NativeCompositor.setOverlayState(JSON.stringify(state)).catch(() => {});
   }, [liveItem, programLayout, countSecs]);
 
+  // Go Live handoff: CameraView unmounts instantly when streamMode flips;
+  // wait 1.5s for the physical camera to release, THEN start native streamer.
   useEffect(() => {
     if (!streamMode || !pendingReq || startCalled.current) return;
     startCalled.current = true;
     const req = pendingReq;
     const t = setTimeout(() => {
-      startPublishing(req, {
-        onConnected: () => setIsLive(true),
-        onDisconnected: () => { setIsLive(false); setStreamMode(false); startCalled.current = false; },
-        onError: (error) => { Alert.alert('Stream Error', error); setIsLive(false); setStreamMode(false); startCalled.current = false; },
-      }).catch((e: any) => { Alert.alert('Go Live failed', e?.message ?? String(e)); setIsLive(false); setStreamMode(false); startCalled.current = false; });
-    }, 500);
+      if (!NativeCompositor) { Alert.alert('Error', 'Native module missing'); resetStreamState(); return; }
+      NativeCompositor.startStreamWithConfig(req.secureStreamUrl, req.width, req.height, req.fps, req.videoBitrate)
+        .then(() => setIsLive(true))
+        .catch((e: any) => {
+          Alert.alert('Go Live failed', e && e.message ? e.message : String(e));
+          resetStreamState();
+        });
+    }, 1500);
     return () => clearTimeout(t);
   }, [streamMode, pendingReq]);
+
+  function resetStreamState() {
+    setIsLive(false);
+    setStreamMode(false);
+    setPendingReq(null);
+    startCalled.current = false;
+  }
 
   function handleRoomCommand(cmd: RoomCommand) {
     if (cmd.type === 'layout') setProgramLayout(cmd.layout);
@@ -175,16 +207,13 @@ export default function DirectorConsole() {
   }
 
   async function handleStop() {
-    try { await stopPublishing(); } catch {}
-    startCalled.current = false;
-    setPendingReq(null);
-    setStreamMode(false);
-    setIsLive(false);
+    try { if (NativeCompositor) await NativeCompositor.stopStream(); } catch {}
+    resetStreamState();
   }
 
   async function handleGradeChange(preset: string) {
     setCurrentGradePreset(preset);
-    await setGrade(preset);
+    if (NativeCompositor) NativeCompositor.setGrade(preset).catch(() => {});
   }
 
   async function handleAudioChange(type: 'mic' | 'media', delta: number) {
@@ -192,7 +221,7 @@ export default function DirectorConsole() {
     const newMedia = type === 'media' ? Math.max(0, Math.min(2, mediaGain + delta)) : mediaGain;
     setMicGain(newMic);
     setMediaGain(newMedia);
-    await setAudioBalance(newMic, newMedia);
+    if (NativeCompositor) NativeCompositor.setAudioBalance(newMic, newMedia).catch(() => {});
   }
 
   async function saveVerse() {
@@ -220,7 +249,7 @@ export default function DirectorConsole() {
   async function saveSong() {
     if (!songTitle.trim() || !songLines.trim()) return;
     const lines = songLines.split('\n').map((l) => l.trim()).filter(Boolean);
-    const next = editingSong !== null ? songs.map((s, i) => (i === editingSong ? { title: songTitle.trim(), lines } : s)) : [...songs, { title: songTitle.trim(), lines }];
+    const next = editingSong !== null ? songs.map((s, i) => (i === editingSong ? { title: songTitle.trim(), lines } : songs[i]) : [...songs, { title: songTitle.trim(), lines }]);
     setSongs(next);
     await AsyncStorage.setItem('songs', JSON.stringify(next));
     setSongTitle(''); setSongLines(''); setEditingSong(null);
@@ -237,8 +266,8 @@ export default function DirectorConsole() {
     if (!annText.trim()) return;
     const next = editingAnn !== null ? announcements.map((a, i) => (i === editingAnn ? annText.trim() : a)) : [...announcements, annText.trim()];
     setAnnouncements(next);
-    await AsyncStorage.setItem('announcements', JSON.stringify(next));
     setAnnText(''); setEditingAnn(null);
+    await AsyncStorage.setItem('announcements', JSON.stringify(next));
   }
   function editAnn(i: number) { setEditingAnn(i); setAnnText(announcements[i]); }
   async function deleteAnn(i: number) {
@@ -294,8 +323,8 @@ export default function DirectorConsole() {
       </View>
       <ScrollView contentContainerStyle={s.scroll}>
         <View style={s.monitors}>
-          <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} pipOn={pipOn} lyricsColor={lyricsColor} hideCam={streamMode} />
-          <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} nativeCam={streamMode} />
+          <Monitor label="PREVIEW" layout={previewLayout} liveItem={liveItem} pipOn={pipOn} lyricsColor={lyricsColor} hideCam={streamMode} nativeCam={false} />
+          <Monitor label="PROGRAM" layout={programLayout} liveItem={liveItem} pipOn={pipOn} lyricsColor={lyricsColor} live={isLive} camera={!!permission?.granted} nativeCam={isLive} hideCam={streamMode} />
         </View>
         {liveItem?.type === 'hymn' && (
           <View style={s.prompterRow}>
@@ -309,8 +338,8 @@ export default function DirectorConsole() {
           <View style={s.takeBtns}>
             <TouchableOpacity style={s.takeBtn} onPress={takePreview}><Text style={s.takeBtnText}>TAKE →</Text></TouchableOpacity>
             {!isLive ? (
-              <TouchableOpacity style={[s.goBtn, !canGoLive && s.disabled]} onPress={handleGoLive} disabled={!canGoLive}>
-                <Text style={s.goBtnText}>Go Live ({resolution})</Text>
+              <TouchableOpacity style={[s.goBtn, (!canGoLive || streamMode) && s.disabled]} onPress={handleGoLive} disabled={!canGoLive || streamMode}>
+                <Text style={s.goBtnText}>{streamMode ? 'Starting…' : `Go Live (${resolution})`}</Text>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity style={s.stopBtn} onPress={handleStop}><Text style={s.goBtnText}>Stop</Text></TouchableOpacity>
@@ -441,8 +470,8 @@ export default function DirectorConsole() {
             <Text style={s.sub}>MEDIA SOURCE (Image Overlay)</Text>
             <TextInput style={s.input} placeholder="/path/to/image.jpg" value={mediaPath} onChangeText={setMediaPath} />
             <View style={s.settingRow}>
-              <TouchableOpacity style={s.saveBtn} onPress={() => { if(mediaPath) showImageMedia(mediaPath); else Alert.alert('Error', 'Enter path'); }}><Text style={s.saveBtnText}>Show</Text></TouchableOpacity>
-              <TouchableOpacity style={s.stopBtn} onPress={clearImageMedia}><Text style={s.goBtnText}>Clear</Text></TouchableOpacity>
+              <TouchableOpacity style={s.saveBtn} onPress={() => { if (mediaPath && NativeCompositor) NativeCompositor.showImageMedia(mediaPath).catch(() => {}); else Alert.alert('Error', 'Enter path'); }}><Text style={s.saveBtnText}>Show</Text></TouchableOpacity>
+              <TouchableOpacity style={s.stopBtn} onPress={() => { if (NativeCompositor) NativeCompositor.clearImageMedia().catch(() => {}); }}><Text style={s.goBtnText}>Clear</Text></TouchableOpacity>
             </View>
             <View style={s.settingRow}><Text style={s.settingLabel}>Room Code</Text><TextInput style={[s.input, { flex: 1 }]} value={roomCode} onChangeText={setRoomCode} /></View>
           </View>
@@ -520,6 +549,11 @@ const s = StyleSheet.create({
   panel: { backgroundColor: '#161b22', borderRadius: 10, padding: 12, marginTop: 12 }, panelTitle: { color: '#fff', fontSize: 14, fontWeight: '800', marginBottom: 10 },
   sub: { color: '#8b949e', fontSize: 11, fontWeight: '700', marginTop: 10, marginBottom: 6 },
   row: { backgroundColor: '#21262d', padding: 10, borderRadius: 8, marginBottom: 6 }, rowText: { color: '#c9d1d9', fontSize: 13 },
+  rowFlex: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }, rowFlexText: { color: '#c9d1d9', fontSize: 13 },
+  rowActive: { backgroundColor: '#7f1d1d' },
+  delBtn: { backgroundColor: '#7f1d1d', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
+  verRow: { flexDirection: 'row', gap: 6, alignItems: 'center', marginBottom: 6 },
+  layoutTag: { color: '#8b949e', fontSize: 9, padding: 4 },
   input: { backgroundColor: '#0d1117', color: '#fff', padding: 10, borderRadius: 8, marginBottom: 6, borderWidth: 1, borderColor: '#30363d' },
   saveBtn: { backgroundColor: '#238636', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, marginTop: 6, alignSelf: 'flex-start' }, saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   sceneGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, sceneCard: { width: '30%', backgroundColor: '#21262d', padding: 14, borderRadius: 10, alignItems: 'center' }, sceneName: { color: '#fff', fontWeight: '700', fontSize: 12 }, sceneSub: { color: '#8b949e', fontSize: 9, marginTop: 2 },
@@ -528,4 +562,5 @@ const s = StyleSheet.create({
   nav: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', backgroundColor: '#161b22', borderTopWidth: 1, borderTopColor: '#30363d', paddingBottom: 20 },
   navItem: { flex: 1, alignItems: 'center', paddingVertical: 12 }, navText: { color: '#8b949e', fontSize: 12, fontWeight: '600' }, navTextActive: { color: '#ff6a00' },
   camOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', gap: 12 }, camText: { color: '#fff', fontSize: 14 },
+  nextBtn: { backgroundColor: '#ff6a00', padding: 12, borderRadius: 8, marginTop: 8, alignItems: 'center' }, nextBtnText: { color: '#0d1117', fontWeight: '800' },
 });
