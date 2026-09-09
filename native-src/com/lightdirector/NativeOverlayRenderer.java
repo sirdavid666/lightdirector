@@ -50,20 +50,15 @@ public class NativeOverlayRenderer {
   }
 
   public void updateOverlayState(JSONObject state) {
-    this.state = state;
-    boolean hasTicker = false;
-    try {
-      hasTicker = state != null && state.has("ticker") && !state.isNull("ticker");
-    } catch (JSONException ignored) {}
-    
-    if (hasTicker && !tickerAnimating) {
-      tickerAnimating = true;
-      mainHandler.post(tickerAnimator);
-    } else if (!hasTicker && tickerAnimating) {
-      tickerAnimating = false;
-    }
-    
-    render();
+  this.state = state;
+  boolean hasTicker = state != null && state.has("ticker") && !state.isNull("ticker");
+  if (hasTicker && !tickerAnimating) {
+    tickerAnimating = true;
+    mainHandler.post(tickerAnimator);
+  } else if (!hasTicker && tickerAnimating) {
+    tickerAnimating = false;
+  }
+  render();
   }
 
   public void showMediaBitmap(Bitmap bitmap) {
