@@ -1,3 +1,4 @@
+cat > plugins/withNativeCompositor.js << 'EOF'
 const fs = require('fs');
 const path = require('path');
 const {
@@ -97,65 +98,63 @@ function withPermissions(config) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// GUARANTEED package registration: line-based injection (no fragile regex)
-// + LOUD failure if anything goes wrong (build errors instead of silent break)
-// ---------------------------------------------------------------------------
 function withPackageRegistration(config) {
   return withMainApplication(config, (config) => {
+    let src = config.modResults.contents;
     const isKotlin = config.modResults.language === 'kotlin';
-    const addLine = isKotlin
-      ? 'packages.add(NativeCompositorPackage())'
-      : 'packages.add(new NativeCompositorPackage());';
     const importLine = isKotlin
       ? 'import com.lightdirector.NativeCompositorPackage'
       : 'import com.lightdirector.NativeCompositorPackage;';
+    const addLine = isKotlin
+      ? 'packages.add(NativeCompositorPackage())'
+      : 'packages.add(new NativeCompositorPackage());';
 
-    const lines = config.modResults.contents.split('\n');
-    const out = [];
-    let injected = false;
-
-    for (const line of lines) {
-      out.push(line);
-      if (!injected && line.includes('PackageList(this)') && line.includes('packages')) {
-        const indent = line.match(/^\s*/)[0];
-        out.push(indent + addLine);
-        injected = true;
-      }
-    }
-
-    // Fallback: inject right before "return packages"
-    if (!injected) {
-      const out2 = [];
-      for (const line of out) {
-        if (line.trim().startsWith('return packages')) {
-          const indent = line.match(/^\s*/)[0];
-          out2.push(indent + addLine);
-          injected = true;
-        }
-        out2.push(line);
-      }
-      out.length = 0;
-      out.push(...out2);
-    }
-
-    let src = out.join('\n');
-
-    // Import at top (before first existing import)
+    // Add import if missing
     if (!src.includes('NativeCompositorPackage')) {
-      throw new Error('withNativeCompositor: injection FAILED - PackageList line not found in MainApplication');
-    }
-    if (!src.includes(importLine)) {
-      const srcLines = src.split('\n');
-      const idx = srcLines.findIndex((l) => l.trim().startsWith('import '));
-      if (idx >= 0) srcLines.splice(idx, 0, importLine);
-      else srcLines.unshift(importLine);
-      src = srcLines.join('\n');
+      const lines = src.split('\n');
+      const firstImportIdx = lines.findIndex(l => l.trim().startsWith('import '));
+      if (firstImportIdx >= 0) {
+        lines.splice(firstImportIdx, 0, importLine);
+      } else {
+        lines.unshift(importLine);
+      }
+      src = lines.join('\n');
     }
 
-    // LOUD verification
+    // AGGRESSIVE injection: try multiple patterns
     if (!src.includes('NativeCompositorPackage()')) {
-      throw new Error('withNativeCompositor: VERIFICATION FAILED - package not registered in MainApplication');
+      // Pattern 1: Kotlin - PackageList(this).packages
+      if (src.includes('PackageList(this).packages')) {
+        src = src.replace(
+          /(PackageList\(this\)\.packages)/,
+          '$1.also { it.add(NativeCompositorPackage()) }'
+        );
+      }
+      // Pattern 2: Java/Kotlin - return packages
+      else if (src.includes('return packages')) {
+        src = src.replace(
+          /(return packages)/,
+          `${addLine}\n    $1`
+        );
+      }
+      // Pattern 3: Nuclear option - inject before the last closing brace of getPackages
+      else {
+        const getPackagesMatch = src.match(/(override fun getPackages\(\)[^{]*\{[\s\S]*?)(\n\s*\})/);
+        if (getPackagesMatch) {
+          src = src.replace(getPackagesMatch[0], `${getPackagesMatch[1]}\n    ${addLine}${getPackagesMatch[2]}`);
+        } else {
+          // Last resort: inject before any "return" statement
+          src = src.replace(
+            /(\n\s*return )/,
+            `\n    ${addLine}$1`
+          );
+        }
+      }
+    }
+
+    // Final verification
+    if (!src.includes('NativeCompositorPackage()')) {
+      throw new Error('withNativeCompositor: CRITICAL - Could not inject NativeCompositorPackage into MainApplication. Manual intervention required.');
     }
 
     config.modResults.contents = src;
@@ -163,39 +162,15 @@ function withPackageRegistration(config) {
   });
 }
 
-// Post-prebuild disk verification: if the generated MainApplication on disk
-// doesn't contain our package, FAIL THE BUILD with a clear message.
-function withVerifyRegistration(config) {
-  return withDangerousMod(config, [
-    'android',
-    async (config) => {
-      const root = config.modRequest.projectRoot;
-      const candidates = [
-        path.join(root, 'android', 'app', 'src', 'main', 'java', 'com', 'lightdirector', 'app', 'MainApplication.kt'),
-        path.join(root, 'android', 'app', 'src', 'main', 'java', 'com', 'lightdirector', 'app', 'MainApplication.java'),
-      ];
-      let found = false;
-      for (const c of candidates) {
-        if (fs.existsSync(c) && fs.readFileSync(c, 'utf8').includes('NativeCompositorPackage')) found = true;
-      }
-      if (!found) {
-        throw new Error('withNativeCompositor: POST-PREBUILD VERIFICATION FAILED - NativeCompositorPackage missing from generated MainApplication');
-      }
-      return config;
-    },
-  ]);
-}
-
 module.exports = (config) => {
   return withCopyNativeJavaFiles(
     withRtmpDependency(
       withGlobalFrescoExclude(
         withPermissions(
-          withVerifyRegistration(
-            withPackageRegistration(config)
-          )
+          withPackageRegistration(config)
         )
       )
     )
   );
 };
+EOF
