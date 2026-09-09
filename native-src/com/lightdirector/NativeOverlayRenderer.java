@@ -11,12 +11,14 @@ import android.os.Looper;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
+import android.util.Log;
 import com.pedro.rtplibrary.view.GlInterface;
 import org.json.JSONException;
 import org.json.JSONObject;
 import java.util.Locale;
 
 public class NativeOverlayRenderer {
+  private static final String TAG = "NativeOverlayRenderer";
   private final GlInterface gl;
   private final OverlayGlFilter filter;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -26,6 +28,8 @@ public class NativeOverlayRenderer {
   private int width = 1280;
   private int height = 720;
   private boolean tickerAnimating = false;
+  private long tickerStartTime = 0;
+
   private final Runnable tickerAnimator = new Runnable() {
     @Override
     public void run() {
@@ -47,18 +51,27 @@ public class NativeOverlayRenderer {
     } catch (Throwable ignored) {}
     this.filter = new OverlayGlFilter();
     gl.addFilter(this.filter);
+    Log.d(TAG, "Initialized with size: " + width + "x" + height);
   }
 
   public void updateOverlayState(JSONObject state) {
-  this.state = state;
-  boolean hasTicker = state != null && state.has("ticker") && !state.isNull("ticker");
-  if (hasTicker && !tickerAnimating) {
-    tickerAnimating = true;
-    mainHandler.post(tickerAnimator);
-  } else if (!hasTicker && tickerAnimating) {
-    tickerAnimating = false;
-  }
-  render();
+    this.state = state;
+    boolean hasTicker = false;
+    try {
+      hasTicker = state != null && state.has("ticker") && !state.isNull("ticker");
+    } catch (Exception ignored) {}
+    
+    if (hasTicker && !tickerAnimating) {
+      tickerAnimating = true;
+      tickerStartTime = System.currentTimeMillis();
+      Log.d(TAG, "Starting ticker animation");
+      mainHandler.post(tickerAnimator);
+    } else if (!hasTicker && tickerAnimating) {
+      tickerAnimating = false;
+      Log.d(TAG, "Stopping ticker animation");
+    }
+    
+    render();
   }
 
   public void showMediaBitmap(Bitmap bitmap) {
@@ -107,6 +120,7 @@ public class NativeOverlayRenderer {
       if ("Blank".equals(layout)) { canvas.drawColor(Color.BLACK); return; }
       if ("CameraOnly".equals(layout)) return;
 
+      // Scripture
       if (s.has("scripture") && !s.isNull("scripture")) {
         JSONObject o = s.getJSONObject("scripture");
         String ref = o.optString("reference", "");
@@ -133,6 +147,7 @@ public class NativeOverlayRenderer {
         canvas.restore();
       }
 
+      // Lyrics
       if (s.has("lyrics") && !s.isNull("lyrics")) {
         JSONObject o = s.getJSONObject("lyrics");
         String title = o.optString("title", "");
@@ -161,6 +176,7 @@ public class NativeOverlayRenderer {
         canvas.drawText(cnt, width - cp.measureText(cnt) - 24, top + cp.getTextSize() + 12, cp);
       }
 
+      // TICKER with animation
       if (s.has("ticker") && !s.isNull("ticker")) {
         JSONObject o = s.getJSONObject("ticker");
         String txt = o.optString("text", "");
@@ -183,13 +199,20 @@ public class NativeOverlayRenderer {
         ttp.setColor(Color.WHITE);
         ttp.setTextSize(stripH * 0.6f);
         float tw = ttp.measureText(txt);
+        
+        // Use elapsed time since ticker started for smooth animation
         long now = System.currentTimeMillis();
-        float off = ((now / 1000f) * speed) % (tw + width);
+        float elapsed = (now - tickerStartTime) / 1000f;
+        float off = (elapsed * speed) % (tw + width);
         float x = width - off;
+        
         canvas.drawText(txt, x, stripTop + stripH * 0.72f, ttp);
-        if (x + tw < width) canvas.drawText(txt, x + tw + 120, stripTop + stripH * 0.72f, ttp);
+        if (x + tw < width) {
+          canvas.drawText(txt, x + tw + 120, stripTop + stripH * 0.72f, ttp);
+        }
       }
 
+      // Lower Third
       if (s.has("lowerThird") && !s.isNull("lowerThird")) {
         JSONObject o = s.getJSONObject("lowerThird");
         String name = o.optString("name", "");
@@ -215,6 +238,7 @@ public class NativeOverlayRenderer {
         canvas.drawText(role, 50, top + nmp.getTextSize() + rp.getTextSize() + 28, rp);
       }
 
+      // Countdown
       if (s.has("countdown") && !s.isNull("countdown")) {
         int sec = s.getJSONObject("countdown").optInt("secondsLeft", 0);
         String txt = String.format(Locale.US, "%02d:%02d", sec / 60, sec % 60);
