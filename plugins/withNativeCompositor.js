@@ -99,26 +99,56 @@ function withPermissions(config) {
 
 function withPackageRegistration(config) {
   return withMainApplication(config, (config) => {
-    const { modResults } = config;
-    const src = modResults.contents;
-    const isKotlin = modResults.language === 'kotlin';
-    const importLine = isKotlin ? "import com.lightdirector.NativeCompositorPackage" : "import com.lightdirector.NativeCompositorPackage;";
-    if (!src.includes(importLine.trim())) {
-      const packageLineMatch = src.match(/^package\s+[\w.]+;?\s*$/m);
-      const insertIdx = packageLineMatch ? packageLineMatch.index + packageLineMatch[0].length : 0;
-      modResults.contents = src.slice(0, insertIdx) + `\n${importLine}` + src.slice(insertIdx);
+    let src = config.modResults.contents;
+    const isKotlin = config.modResults.language === 'kotlin';
+    
+    // Add import if missing
+    const importLine = isKotlin 
+      ? 'import com.lightdirector.NativeCompositorPackage' 
+      : 'import com.lightdirector.NativeCompositorPackage;';
+    
+    if (!src.includes('NativeCompositorPackage')) {
+      const packageMatch = src.match(/^package\s+[\w.]+;?\s*$/m);
+      if (packageMatch) {
+        const insertIdx = packageMatch.index + packageMatch[0].length;
+        src = src.slice(0, insertIdx) + '\n' + importLine + src.slice(insertIdx);
+      }
     }
+    
+    // Add package to the list
     if (isKotlin) {
-      const applyMatch = modResults.contents.match(/PackageList\(this\)\.packages\.apply\s*{\s*([^}]*)}/s);
-      if (applyMatch && !/NativeCompositorPackage\(\)/.test(applyMatch[1])) {
-        modResults.contents = modResults.contents.replace(applyMatch[0], `PackageList(this).packages.apply {${applyMatch[1]}\n    add(NativeCompositorPackage())\n}`);
+      if (!src.includes('NativeCompositorPackage()')) {
+        // Try multiple patterns for Kotlin
+        src = src.replace(
+          /(PackageList\(this\)\.packages)/,
+          '$1.apply { add(NativeCompositorPackage()) }'
+        );
+        // Fallback: if that didn't work, try adding after packages list
+        if (!src.includes('NativeCompositorPackage()')) {
+          src = src.replace(
+            /(return\s+packages)/,
+            'packages.add(NativeCompositorPackage())\n    $1'
+          );
+        }
       }
     } else {
-      const getPackagesMatch = modResults.contents.match(/protected\s+java\.util\.List<\s*ReactPackage\s*>\s+getPackages\(\)\s*{\s*([\s\S]*?)return\s+packages;\s*}/);
-      if (getPackagesMatch && !/new\s+NativeCompositorPackage\(\)/.test(getPackagesMatch[1])) {
-        modResults.contents = modResults.contents.replace(getPackagesMatch[0], `protected java.util.List<ReactPackage> getPackages() {\n${getPackagesMatch[1]}\n    packages.add(new NativeCompositorPackage());\n    return packages;\n}`);
+      if (!src.includes('new NativeCompositorPackage()')) {
+        // Java: find getPackages and inject before return
+        const getPackagesRegex = /(protected\s+List<ReactPackage>\s+getPackages\s*\(\s*\)\s*\{[^}]*?)(return\s+packages;)/s;
+        const match = src.match(getPackagesRegex);
+        if (match) {
+          src = src.replace(getPackagesRegex, '$1packages.add(new NativeCompositorPackage());\n    $2');
+        } else {
+          // Fallback: just append before any "return packages"
+          src = src.replace(
+            /(return\s+packages;)/,
+            'packages.add(new NativeCompositorPackage());\n    $1'
+          );
+        }
       }
     }
+    
+    config.modResults.contents = src;
     return config;
   });
 }
