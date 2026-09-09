@@ -25,6 +25,16 @@ public class NativeOverlayRenderer {
   private Bitmap recyclePending = null;
   private int width = 1280;
   private int height = 720;
+  private boolean tickerAnimating = false;
+  private final Runnable tickerAnimator = new Runnable() {
+    @Override
+    public void run() {
+      if (tickerAnimating && state != null) {
+        render();
+        mainHandler.postDelayed(this, 33); // ~30fps
+      }
+    }
+  };
 
   public NativeOverlayRenderer(GlInterface gl) {
     this.gl = gl;
@@ -41,6 +51,18 @@ public class NativeOverlayRenderer {
 
   public void updateOverlayState(JSONObject state) {
     this.state = state;
+    boolean hasTicker = false;
+    try {
+      hasTicker = state != null && state.has("ticker") && !state.isNull("ticker");
+    } catch (JSONException ignored) {}
+    
+    if (hasTicker && !tickerAnimating) {
+      tickerAnimating = true;
+      mainHandler.post(tickerAnimator);
+    } else if (!hasTicker && tickerAnimating) {
+      tickerAnimating = false;
+    }
+    
     render();
   }
 
@@ -170,7 +192,7 @@ public class NativeOverlayRenderer {
         float off = ((now / 1000f) * speed) % (tw + width);
         float x = width - off;
         canvas.drawText(txt, x, stripTop + stripH * 0.72f, ttp);
-        if (x < tw) canvas.drawText(txt, x + tw + 120, stripTop + stripH * 0.72f, ttp);
+        if (x + tw < width) canvas.drawText(txt, x + tw + 120, stripTop + stripH * 0.72f, ttp);
       }
 
       if (s.has("lowerThird") && !s.isNull("lowerThird")) {
@@ -218,6 +240,8 @@ public class NativeOverlayRenderer {
   }
 
   public void release() {
+    tickerAnimating = false;
+    mainHandler.removeCallbacks(tickerAnimator);
     try { gl.removeFilter(filter); } catch (Throwable ignored) {}
     filter.release();
   }
